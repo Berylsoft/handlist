@@ -1,6 +1,11 @@
 {
   "name": "handlist",
   "version": "1.0.0",
+  "author": {
+    "name": "stackinspector",
+    "email": "stackinspector@126.com"
+  },
+  "license": "MPL-2.0",
   "description": "A strict, human-friendly subset of YAML for hand-edited configuration files",
   "type": "module",
   "main": "./dist/cjs/index.js",

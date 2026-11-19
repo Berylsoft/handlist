@@ -1,8 +1,10 @@
 [package]
 name = "handlist"
 version = "1.0.0"
-edition = "2021"
-rust-version = "1.70"
+edition = "2024"
+authors = ["stackinspector"]
+license = "MPL-2.0"
+repository = "https://github.com/Berylsoft/handlist"
 description = "A strict, human-friendly subset of YAML for hand-edited configuration files"
 keywords = ["yaml", "config", "parser", "serde", "data"]
 categories = ["parser-implementations", "config", "encoding"]
