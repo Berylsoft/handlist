@@ -1,0 +1,13 @@
+# build artifacts
+/rust/target/
+/typescript/node_modules/
+/typescript/dist/
+/.npm-cache/
+
+# editor / OS noise
+.DS_Store
+*.swp
+
+# package tarballs and incremental build state
+*.tgz
+*.tsbuildinfo

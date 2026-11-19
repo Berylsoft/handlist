@@ -1,0 +1,41 @@
+{
+  "name": "handlist",
+  "version": "1.0.0",
+  "description": "A strict, human-friendly subset of YAML for hand-edited configuration files",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist/esm",
+    "dist/cjs",
+    "dist/types"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && tsc -p tsconfig.types.json && node scripts/postbuild.mjs",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist/test/test/*.test.js"
+  },
+  "keywords": [
+    "handlist",
+    "yaml",
+    "configuration",
+    "parser",
+    "serde"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "yaml": "^2.9.1"
+  }
+}
