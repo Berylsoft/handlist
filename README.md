@@ -1,29 +1,31 @@
 # handlist
 
-**为人工编辑而设计的数据描述语言**：整体是 YAML 的子集，保留 YAML 易读的块状结构，去掉所有依赖隐式规则、容易写错的语法。扩展名为 `.handlist`。
+**English** | [简体中文](README.zh.md)
 
-最初用于描述网站的目录与页面配置，也适用于菜单、索引、文档元数据等需要大量手写的结构化数据。
+A data description language built for hand editing: a subset of YAML that keeps the readable block structure and removes every rule that depends on implicit behavior or is easy to get wrong. File extension: `.handlist`.
 
-- 规范：[`spec/handlist-spec.md`](spec/handlist-spec.md)（英文，1.0）
-- Rust 实现：[`rust/`](rust/)（解析 + 规范序列化 + serde）
-- TypeScript 实现：[`typescript/`](typescript/)（零运行时依赖，ESM/CJS + 类型）
-- 示例：[`examples/`](examples/)
+It was originally created to describe a website's directory and page configuration, and it also suits menus, indexes, documentation metadata, and other structured data that is written and maintained by hand.
+
+- Specification: [`spec/handlist-spec.md`](spec/handlist-spec.md) (English, 1.0)
+- Rust implementation: [`rust/`](rust/) (parser + canonical serializer + serde)
+- TypeScript implementation: [`typescript/`](typescript/) (zero runtime dependencies, ESM/CJS + types)
+- Examples: [`examples/`](examples/)
 
 ---
 
-## 设计目标
+## Design goals
 
-1. **结构只看缩进。** 固定每层 2 个空格，禁止 YAML 的“缩进序列”（`key:` 下一行 `-` 与键同列），禁止任意宽度缩进。
-2. **每种东西只有一种写法。** 字符串只有普通标量和双引号两种；没有单引号字符串、折叠块 `>`、锚点、别名、标签、flow mapping。
-3. **没有隐式惊喜。** `key:` 不表示 null；`yes`、`1e3`、`0x10`、`01` 都是字符串；映射键永远是字符串；重复键是错误。
-4. **多行文本保留换行。** 用 `|` 编写 HTML 或长段落，内容逐行保留，末尾不带换行。
-5. **机器友好。** 数据模型对应 JSON 类值；Rust 提供完整 serde 支持；规范序列化可稳定往返。
-6. **严格 YAML 1.2 语法子集。** 任何合法 handlist 文件都能被 YAML 解析器读取；可以用 YAML 高亮、编辑器与校验器。但值语义按 handlist 的规则解释。
+1. **Structure is indentation only.** Every level is exactly two spaces. YAML's "indentless sequences" (a `-` at the same column as the key that owns it) and arbitrary indentation widths are forbidden.
+2. **One way to write each thing.** Strings are plain or double-quoted. There are no single-quoted strings, folded `>` blocks, anchors, aliases, tags, or flow mappings.
+3. **No implicit surprises.** `key:` is not null; `yes`, `1e3`, `0x10`, and `01` are strings; mapping keys are always strings; duplicate keys are errors.
+4. **Multi-line text keeps its line breaks.** Use `|` for HTML or long prose; lines are preserved and there is no trailing newline.
+5. **Machine-friendly.** The data model maps to JSON-like values; Rust has full serde support; canonical serialization round-trips reliably.
+6. **A strict YAML 1.2 syntax subset.** Every valid handlist document can be read by a YAML parser, so YAML highlighting, editors, and validators remain usable. Value semantics follow handlist's rules.
 
-## 语法一览
+## Syntax overview
 
 ```handlist
-# 站点索引
+# Site index
 site:
   name: Example
   enabled: true
@@ -36,41 +38,41 @@ site:
       action: page
       tags: [hardware, info]
   description: |
-    第一行
-    第二行 <b>HTML</b>
+    First line
+    Second line with <b>HTML</b>
 ```
 
-### 结构
+### Structure
 
-- 缩进固定为 2 个空格；子块必须正好比父层多 2 格。
-- 映射：`key: value`；如果值在下一行，下一行必须是映射或序列（`key:` 后什么都不跟不是 null）。
-- 序列：`- value`，`-` 后必须恰好一个空格；支持 `- key: value` 紧凑映射与 `- - value` 嵌套序列。
-- 注释：整行注释 `# 任意内容`；行尾注释写成 ` # 注释`（`#` 后有空格），`#` 后直接换行则表示空注释；`C#`、URL 里的 `#` 是普通内容。
-- 块文本：`key: |` 或 `- |`，内容比父层多缩进 2 格；逐行保留，去掉每行行尾空白与首尾空行，值末尾无换行。
-- 行内数组：`[a, b, c]`，只允许单行标量元素；空数组 `[]`、空映射 `{}`。
-- 映射键总是字符串；裸键限 `[A-Za-z0-9_][A-Za-z0-9_-]*`，其他字符用双引号键。`10:` 和 `"10":` 等价。
-- 标量类型：只识别 `true`/`false`/`null`、十进制整数（无前导零、安全整数范围内）、带小数点的小数（无指数）。其余全是字符串。
-- 文档：单文档、单根节点；不支持 `---`、`...`、`%YAML`、锚点、别名、标签、多文档。
+- Indentation is exactly 2 spaces; a child block is exactly 2 spaces deeper than its parent.
+- Mappings: `key: value`. When the value is on the next line, that line must be a mapping or a sequence (`key:` with nothing after it is not null).
+- Sequences: `- value`, with exactly one space after `-`. Compact mappings (`- key: value`) and nested sequences (`- - value`) are supported.
+- Comments: full-line comments use `# ...`; inline comments use ` # comment` (with a space after `#`). A `#` followed directly by the end of the line is an empty comment. `C#` and URL fragments are ordinary content.
+- Block text: `key: |` or `- |`; content is indented 2 spaces beyond the parent, line breaks are preserved, trailing whitespace and leading/trailing blank lines are removed, and there is no trailing newline.
+- Inline arrays: `[a, b, c]`, single-line scalar elements only; empty arrays are `[]` and empty mappings are `{}`.
+- Mapping keys are always strings. Bare keys are limited to `[A-Za-z0-9_][A-Za-z0-9_-]*`; other keys use double quotes. `10:` and `"10":` are equivalent.
+- Scalar types: only `true`/`false`/`null`, decimal integers (no leading zeros, within the safe integer range), and decimals with a decimal point (no exponents). Everything else is a string.
+- Documents: one document and one root node. YAML document markers (`---`/`...`), `%YAML`, anchors, aliases, tags, and multiple documents are not supported.
 
-这些写法会被明确拒绝：`yes`/`no` 作为布尔、`key:` 隐式 null、缩进序列、`>` 折叠块、`|-`/`|+`、单引号字符串、非空 flow mapping、尾逗号、行内 `#注释`（无空格）、Tab 缩进、重复键、多个根节点。完整规则见规范。
+These constructs are rejected explicitly: `yes`/`no` as booleans, implicit null with `key:`, indentless sequences, `>` folded blocks, `|-`/`|+`, single-quoted strings, non-empty flow mappings, trailing commas, inline `#comment` without a space, tab indentation, duplicate keys, and multiple root nodes. The specification defines the complete rules.
 
-## 仓库结构
+## Repository layout
 
 ```text
 .
 ├── spec/
-│   └── handlist-spec.md          规范（EBNF、语义、规范化、错误、YAML 对比）
+│   └── handlist-spec.md          Specification (EBNF, semantics, canonical form, errors, YAML comparison)
 ├── rust/
-│   ├── src/                      解析器、Value/Map、错误、序列化、serde
-│   ├── tests/                    语法、serde、示例与 canonical fixture
-│   └── examples/canonicalize.rs  打印/生成 canonical 输出
+│   ├── src/                      Parser, Value/Map, errors, serializer, serde
+│   ├── tests/                    Syntax, serde, examples + canonical fixtures
+│   └── examples/canonicalize.rs  Print/generate canonical output
 ├── typescript/
-│   ├── src/                      零依赖 TS 实现
-│   ├── test/                     语法、序列化、示例、YAML 子集校验
-│   └── dist/                     构建产物（ESM/CJS/类型）
+│   ├── src/                      Zero-dependency TypeScript implementation
+│   ├── test/                     Syntax, serialization, examples, YAML-subset checks
+│   └── dist/                     Build output (ESM/CJS/types)
 └── examples/
-    ├── homepage/                 8 个从 YAML 改写的 .handlist 示例
-    └── canonical/                对应的 canonical 输出（Rust/TS 共用契约）
+    ├── homepage/                 8 .handlist examples converted from YAML
+    └── canonical/                Corresponding canonical output (shared Rust/TS contract)
 ```
 
 ## Rust
@@ -98,21 +100,21 @@ site:
 }
 ```
 
-主要 API：
+Main API:
 
-- `handlist::parse(&str) -> Result<Value, Error>`：解析为有序 `Value`。
-- `handlist::to_string_value(&Value) -> Result<String, Error>`：canonical 序列化，始终可用。
-- `Value::{Null, Bool, Int, Float, String, Seq, Map}`；`Map` 保留插入顺序。
-- `Error::{message, line, column}`；解析错误的行列从 1 开始，列按 Unicode 标量值计数。
-- 默认启用 `serde` feature：
+- `handlist::parse(&str) -> Result<Value, Error>`: parse into an ordered `Value`.
+- `handlist::to_string_value(&Value) -> Result<String, Error>`: canonical serialization, always available.
+- `Value::{Null, Bool, Int, Float, String, Seq, Map}`; `Map` preserves insertion order.
+- `Error::{message, line, column}`; parse-error lines and columns are 1-based, and columns count Unicode scalar values.
+- The `serde` feature is enabled by default:
   - `handlist::from_str::<T>(&str)`
   - `handlist::to_string(&T)`
   - `handlist::to_value(&T)`
-  - `Value`/`Map` 自身实现 `Serialize`/`Deserialize`。
-- 数字型映射键也能从字符串键正确反序列化，例如 `BTreeMap<u8, String>` 读取 `10: ...`。
-- 关闭 serde（`default-features = false`）时仍保留 `parse`、`Value` 与 `to_string_value`。
+  - `Value`/`Map` implement `Serialize`/`Deserialize` themselves.
+- Numeric mapping keys also deserialize correctly from string keys; for example, `BTreeMap<u8, String>` can read `10: ...`.
+- With serde disabled (`default-features = false`), `parse`, `Value`, and `to_string_value` remain available.
 
-测试：
+Tests:
 
 ```bash
 cd rust
@@ -134,36 +136,36 @@ import {
   stringify,
 } from "handlist";
 
-const config = parse(source);            // 映射是普通对象，便于 JSON 使用
-const ordered = parseOrdered(source);    // 映射是 Map，严格保留源顺序
+const config = parse(source);            // mappings are plain objects, ready for JSON
+const ordered = parseOrdered(source);    // mappings are Maps, source order preserved
 
-console.log(stringify(config));          // canonical handlist 文本
+console.log(stringify(config));          // canonical handlist text
 ```
 
-- 零运行时依赖，Node.js >= 18；同时输出 ESM、CJS 和 `.d.ts`。
-- `parse()` 返回 JSON 友好的普通对象；`parseOrdered()` 返回 `Map`，键顺序（包括 `10`、`2`、`1` 这类数字样键）严格按源文件。
-- `stringify()` 接受普通对象、`Map`、数组和标量，输出规范文本。
-- 解析错误抛出 `HandlistError`，带 `reason`、`line`、`column`。
+- Zero runtime dependencies, Node.js >= 18; ESM, CJS, and `.d.ts` output.
+- `parse()` returns JSON-friendly plain objects; `parseOrdered()` returns `Map`s whose key order (including numeric-looking keys such as `10`, `2`, and `1`) follows the source exactly.
+- `stringify()` accepts plain objects, `Map`s, arrays, and scalars, and emits canonical text.
+- Parse errors throw `HandlistError` with `reason`, `line`, and `column`.
 
-**两个 JavaScript 主机语言限制**：
+**Two JavaScript host-language limitations:**
 
-1. 普通对象的数字样键会被 JavaScript 排序（`"10"`、`"2"`、`"1"` 变成 `"1"`、`"2"`、`"10"`）。需要精确顺序时用 `parseOrdered()`（返回 `Map`），或使用 Rust 实现。
-2. JavaScript 只有一种 `number` 类型，无法区分整数与浮点。`parseOrdered()` 对 `1.0` 与 `1` 都返回数值 `1`；`stringify()` 会把安全整数范围内的整数值按整数形式输出，更大的整数值按浮点形式输出。需要严格区分 int/float 时使用 Rust 实现。
+1. Plain objects order numeric-looking keys numerically in JavaScript (`"10"`, `"2"`, `"1"` become `"1"`, `"2"`, `"10"`). Use `parseOrdered()` (which returns `Map`) or the Rust implementation when exact order matters.
+2. JavaScript has one `number` type and cannot distinguish integers from floats. `parseOrdered()` returns the number `1` for both `1.0` and `1`; `stringify()` emits safe-range integral values in integer form and larger integral values in float form. Use the Rust implementation when exact int/float distinction matters.
 
-测试：
+Tests:
 
 ```bash
 cd typescript
 npm test
 ```
 
-测试会用 [`yaml`](https://www.npmjs.com/package/yaml) 包校验所有 `.handlist` 示例与 canonical fixture 同时也是合法 YAML 1.2。
+The tests use the [`yaml`](https://www.npmjs.com/package/yaml) package to verify that every `.handlist` example and canonical fixture is also valid YAML 1.2.
 
-## 示例
+## Examples
 
-[`examples/homepage/`](examples/homepage/) 里的 8 个文件来自 [`ldtstore-homepage/page`](https://github.com/stackinspector/ldtstore-homepage) 的 YAML 配置：
+The eight files in [`examples/homepage/`](examples/homepage/) come from the YAML configuration in [`ldtstore-homepage/page`](https://github.com/stackinspector/ldtstore-homepage):
 
-| handlist | 原始 YAML |
+| handlist | Original YAML |
 |---|---|
 | `home/major.handlist` | `page/home/major.yml` |
 | `home/sides.handlist` | `page/home/sides.yml` |
@@ -174,46 +176,46 @@ npm test
 | `tool/sides.handlist` | `page/tool/sides.yml` |
 | `tool/tools.handlist` | `page/tool/tools.yml` |
 
-改写时做了这些调整：
+The rewrite made these adjustments:
 
-- 折叠块 `>` 改为字面量 `|`（HTML 渲染不受影响，但换行会被保留）。
-- 缩进序列统一增加 2 格缩进。
-- 少量“键后下一行写标量”的 YAML 写法（`burning:` 后换行）改为同行标量，因为 handlist 的下一行值必须是映射或序列。
-- 引号数字键 `"10":` 改为裸键 `10:`（仍等价于字符串键 `"10"`）。
-- 注释保留在示例中；canonical fixture 不保留注释。
+- Folded blocks `>` became literal `|` blocks (HTML rendering is unaffected, but line breaks are preserved).
+- Indentless sequences gained the required 2 spaces of indentation.
+- A few YAML "scalar on the next line" cases (a value after `burning:`) became same-line scalars, because a next-line value in handlist must be a mapping or sequence.
+- Quoted numeric keys such as `"10":` became bare keys such as `10:` (still equivalent to the string key `"10"`).
+- Comments are kept in the examples; canonical fixtures do not contain comments.
 
-[`examples/canonical/`](examples/canonical/) 是规范序列化输出。Rust 与 TypeScript 测试都会校验：解析示例得到的 canonical 文本必须与 fixture 逐字节一致，并且 TS 与 Rust 的 fixture 相同。重新生成：
+[`examples/canonical/`](examples/canonical/) contains canonical serialization output. Both the Rust and TypeScript tests require the canonical text for each example to match its fixture byte for byte, and both implementations share the same fixtures. Regenerate them with:
 
 ```bash
 cd rust
 cargo run --example canonicalize
 ```
 
-## 规范与取舍
+## Specification and trade-offs
 
-完整规范见 [`spec/handlist-spec.md`](spec/handlist-spec.md)。规范包含：
+The complete specification is [`spec/handlist-spec.md`](spec/handlist-spec.md). It covers:
 
-- 文件格式、编码、缩进、注释规则；
-- 完整 EBNF 与节点语义；
-- 类型推断、安全整数范围、空值/空集合规则；
-- canonical 序列化规则；
-- 错误报告约定；
-- 与 YAML 的功能对照表及移除原因。
+- file format, encoding, indentation, and comment rules;
+- the full EBNF and node semantics;
+- type resolution, the safe integer range, and empty-value/empty-collection rules;
+- canonical serialization rules;
+- error-reporting conventions;
+- a feature comparison with YAML and the reasons for each removal.
 
-几个关键取舍：
+Key trade-offs:
 
-- **严格 YAML 1.2 子集**：删除的语法包括锚点/别名/merge、标签、`>` 折叠块、chomping 指示符、单引号字符串、多行 plain/quoted 标量、非空 flow mapping、缩进序列、任意缩进、隐式 null、重复键、YAML 1.1 布尔、十六进制/八进制/指数/日期/sexagesimal 等。
-- **键永远是字符串**：避免 `10:`、`true:`、`no:` 在不同 schema 下变成不同类型；映射顺序必须保留。
-- **映射键唯一**：重复键直接报错，不做 last-wins。
-- **块文本固定语义**：只允许 `|`，不支持 `>` 和 `|-`/`|+`；内容基准缩进固定为父层 +2，末尾不带换行。
-- **没有 Unicode/十六进制转义**：只支持 `\"`、`\\`、`\n`、`\t`。这样转义表极小、非 ASCII 文本直接以 UTF-8 书写、可读性和 diff 更稳定，也避免了 Rust 风格 `\u{...}` 与 YAML 的 `\uXXXX` 之间的歧义。代价是其他控制字符无法在字符串中表示——序列化器会报错而不是输出不可读的转义。这个理由也记录在规范第 9.4 节。
+- **Strict YAML 1.2 subset.** Removed syntax includes anchors/aliases/merge keys, tags, `>` folded blocks, chomping indicators, single-quoted strings, multi-line plain/quoted scalars, non-empty flow mappings, indentless sequences, arbitrary indentation, implicit null, duplicate keys, YAML 1.1 booleans, hexadecimal/octal/exponent/date/sexagesimal forms, and more.
+- **Keys are always strings.** This avoids `10:`, `true:`, and `no:` becoming different types under different schemas; mapping order must be preserved.
+- **Unique mapping keys.** Duplicate keys are errors, never last-wins.
+- **Fixed block-text semantics.** Only `|` is allowed; `>` and `|-`/`|+` are not. Content is indented exactly two spaces beyond its container and the value has no trailing newline.
+- **No Unicode or hex escapes.** Only `\"`, `\\`, `\n`, and `\t` are supported. This keeps the escape alphabet tiny, lets non-ASCII text appear directly as UTF-8, produces stable readable diffs, and avoids the ambiguity between Rust-style `\u{...}` and YAML's `\uXXXX`. The cost is that other control characters cannot be represented in strings: serializers report an error instead of emitting unreadable escapes. The rationale is also recorded in Section 9.4 of the specification.
 
-## 测试覆盖
+## Test coverage
 
-- Rust：29 个解析/序列化测试、10 个 serde 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
-- TypeScript：26 个解析/序列化/示例/YAML 子集测试，覆盖有序 Map、`__proto__` 键防护、循环引用、数字格式化与错误位置。
-- 两端对 8 个示例的 canonical 输出逐字节一致。
+- Rust: 29 parser/serializer tests, 10 serde tests, 1 example + canonical fixture test, and 1 doc test.
+- TypeScript: 26 parser/serializer/example/YAML-subset tests, covering ordered Maps, `__proto__` key protection, cycles, number formatting, and error positions.
+- The canonical output for all eight examples is byte-identical between the two implementations.
 
-## 状态
+## Status
 
-handlist 1.0，稳定。扩展名 `.handlist`，单文档、单根节点。后续版本应保持：已有合法文档继续合法、已有值不变、canonical 输出可读且可往返、accepted language 仍是 YAML 1.2 的语法子集。
+handlist 1.0 is stable. The extension is `.handlist`; a document has one root node. Future versions should preserve these invariants: existing valid documents remain valid, existing values remain unchanged, canonical output stays readable and round-trips, and the accepted language remains a YAML 1.2 syntax subset.
