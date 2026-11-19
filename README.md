@@ -7,7 +7,7 @@ A data description language built for hand editing: a subset of YAML that keeps 
 It was originally created to describe a website's directory and page configuration, and it also suits menus, indexes, documentation metadata, and other structured data that is written and maintained by hand.
 
 - Specification: [`spec/handlist-spec.md`](spec/handlist-spec.md) (English, 1.0)
-- Rust implementation: [`rust/`](rust/) (parser + canonical serializer + serde)
+- Rust implementation: [`rust/`](rust/) (parser + canonical serializer + serde + `handlist-check` binary)
 - TypeScript implementation: [`typescript/`](typescript/) (zero runtime dependencies, ESM/CJS + types)
 - Examples: [`examples/`](examples/)
 
@@ -64,7 +64,8 @@ These constructs are rejected explicitly: `yes`/`no` as booleans, implicit null 
 │   └── handlist-spec.md          Specification (EBNF, semantics, canonical form, errors, YAML comparison)
 ├── rust/
 │   ├── src/                      Parser, Value/Map, errors, serializer, serde
-│   ├── tests/                    Syntax, serde, examples + canonical fixtures
+│   │   └── bin/handlist-check.rs Recursive syntax checker binary
+│   ├── tests/                    Syntax, serde, CLI, examples + canonical fixtures
 │   └── examples/canonicalize.rs  Print/generate canonical output
 ├── typescript/
 │   ├── src/                      Zero-dependency TypeScript implementation
@@ -113,6 +114,17 @@ Main API:
   - `Value`/`Map` implement `Serialize`/`Deserialize` themselves.
 - Numeric mapping keys also deserialize correctly from string keys; for example, `BTreeMap<u8, String>` can read `10: ...`.
 - With serde disabled (`default-features = false`), `parse`, `Value`, and `to_string_value` remain available.
+
+### Syntax checker
+
+The crate also builds a `handlist-check` binary. Run it from `rust/`:
+
+```bash
+cargo run --bin handlist-check -- ../examples
+cargo run --bin handlist-check -- ../examples --all
+```
+
+`handlist-check` accepts files and directories. Explicit files are checked regardless of extension; directories are searched recursively for files whose names end with `.handlist`. With no paths it checks `.`. Syntax diagnostics use `path:line:column: error: message` and are written to stderr; the summary goes to stdout. Exit codes are 0 (clean), 1 (errors), and 2 (usage error). The parser reports the first syntax error in each file. By default `.git`, `target`, and `node_modules` are skipped; `--all` includes them. Directory symlinks are not followed while recursing.
 
 Tests:
 
@@ -212,7 +224,7 @@ Key trade-offs:
 
 ## Test coverage
 
-- Rust: 29 parser/serializer tests, 10 serde tests, 1 example + canonical fixture test, and 1 doc test.
+- Rust: 29 parser/serializer tests, 10 serde tests, 8 CLI tests, 1 example + canonical fixture test, and 1 doc test.
 - TypeScript: 26 parser/serializer/example/YAML-subset tests, covering ordered Maps, `__proto__` key protection, cycles, number formatting, and error positions.
 - The canonical output for all eight examples is byte-identical between the two implementations.
 

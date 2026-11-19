@@ -7,7 +7,7 @@
 最初用于描述网站的目录与页面配置，也适用于菜单、索引、文档元数据等需要大量手写的结构化数据。
 
 - 规范：[`spec/handlist-spec.md`](spec/handlist-spec.md)（英文，1.0）
-- Rust 实现：[`rust/`](rust/)（解析 + 规范序列化 + serde）
+- Rust 实现：[`rust/`](rust/)（解析 + 规范序列化 + serde + `handlist-check` 二进制）
 - TypeScript 实现：[`typescript/`](typescript/)（零运行时依赖，ESM/CJS + 类型）
 - 示例：[`examples/`](examples/)
 
@@ -64,7 +64,8 @@ site:
 │   └── handlist-spec.md          规范（EBNF、语义、规范化、错误、YAML 对比）
 ├── rust/
 │   ├── src/                      解析器、Value/Map、错误、序列化、serde
-│   ├── tests/                    语法、serde、示例与 canonical fixture
+│   │   └── bin/handlist-check.rs 递归语法检查二进制
+│   ├── tests/                    语法、serde、CLI、示例与 canonical fixture
 │   └── examples/canonicalize.rs  打印/生成 canonical 输出
 ├── typescript/
 │   ├── src/                      零依赖 TS 实现
@@ -113,6 +114,17 @@ site:
   - `Value`/`Map` 自身实现 `Serialize`/`Deserialize`。
 - 数字型映射键也能从字符串键正确反序列化，例如 `BTreeMap<u8, String>` 读取 `10: ...`。
 - 关闭 serde（`default-features = false`）时仍保留 `parse`、`Value` 与 `to_string_value`。
+
+### 语法检查器
+
+本 crate 同时构建 `handlist-check` 二进制。在 `rust/` 目录下运行：
+
+```bash
+cargo run --bin handlist-check -- ../examples
+cargo run --bin handlist-check -- ../examples --all
+```
+
+`handlist-check` 接受文件或目录。显式传入的文件不检查扩展名；目录会递归查找文件名以 `.handlist` 结尾的文件，未提供路径时检查 `.`。语法错误以 `path:line:column: error: message` 输出到 stderr，汇总信息输出到 stdout。退出码为 0（无错误）、1（有错误）、2（用法错误）。每个文件报告第一个语法错误。默认跳过 `.git`、`target`、`node_modules`，`--all` 会包含它们；递归时不跟随目录符号链接。
 
 测试：
 
@@ -212,7 +224,7 @@ cargo run --example canonicalize
 
 ## 测试覆盖
 
-- Rust：29 个解析/序列化测试、10 个 serde 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
+- Rust：29 个解析/序列化测试、10 个 serde 测试、8 个 CLI 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
 - TypeScript：26 个解析/序列化/示例/YAML 子集测试，覆盖有序 Map、`__proto__` 键防护、循环引用、数字格式化与错误位置。
 - 两端对 8 个示例的 canonical 输出逐字节一致。
 

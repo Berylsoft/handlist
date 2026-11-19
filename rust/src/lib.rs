@@ -12,6 +12,13 @@
 //!
 //! The parser has no dependencies. Enable the default `serde` feature for
 //! `from_str`, `to_string`, and `to_value`.
+//!
+//! The crate also ships a `handlist-check` binary that recursively checks
+//! `.handlist` files and directories:
+//!
+//! ```text
+//! cargo run --bin handlist-check -- path/to/config
+//! ```
 
 #![warn(missing_docs)]
 
