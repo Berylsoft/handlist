@@ -54,7 +54,9 @@ The name is written in lower case: *handlist*.
 - It is not a markup language, a template language, or a programming language.
 - It does not support anchors, aliases, merge keys, custom tags, binary data,
   multiple documents, or schema definition in the file itself.
-- It does not preserve comments, blank lines, or formatting on round-trip.
+- It does not preserve comments, blank lines, or formatting on a round-trip
+  through the data model. A separate source-to-source formatter MAY preserve
+  comments as trivia (see Section 7.1).
 - It does not aim to be the most compact possible notation. Verbosity in
   exchange for clarity is acceptable.
 
@@ -208,7 +210,9 @@ There are two comment forms:
 - A space after `#` is not required for full-line comments.
 - Inside block text, every line is content. A line beginning with `#` there is
   not a comment.
-- Comments are ignored by the data model and are not preserved by serializers.
+- Comments are ignored by the data model and are not preserved by serializers
+  that start from that model. A source-to-source formatter MAY retain them as
+  formatting trivia (Section 7.1).
 
 ### 3.3 Node kinds
 
@@ -694,7 +698,10 @@ Canonical output is deterministic and always parses back to an equal value.
 - One space after `:` before an inline value; one space after `-`.
 - Mappings and sequences are emitted in block style.
 - Flow sequences are never emitted; use block sequences.
-- Comments are never emitted.
+- Comments are never emitted by a serializer that starts from the data model.
+  A source-to-source formatter MAY retain comments while emitting otherwise
+  canonical data lines. It MAY re-indent full-line comments and normalize blank
+  lines; comment text is not part of the data model.
 
 ### 7.2 Empty collections and null
 

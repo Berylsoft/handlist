@@ -10,7 +10,7 @@
 //! assert_eq!(text, "name: example\nitems:\n  - one\n  - two\n");
 //! ```
 //!
-//! The parser has no dependencies. Enable the default `serde` feature for
+//! The core parser has no dependencies. Enable the default `serde` feature for
 //! `from_str`, `to_string`, and `to_value`.
 //!
 //! Use [`parse_with_spans`] when the source positions of values and mapping
@@ -18,24 +18,34 @@
 //! serde errors such as a wrong field type, a missing field, or an unknown
 //! field carry the position of the field currently being decoded.
 //!
-//! The crate also ships a `handlist-check` binary that recursively checks
-//! `.handlist` files and directories:
+//! [`format()`] canonicalizes source text while preserving comments. With the
+//! default `schema` feature, [`validate_json_schema`] validates the JSON
+//! projection of a document against a draft-07 or 2020-12 JSON Schema.
+//!
+//! The crate also ships a `handlist` CLI with `check` and `fmt` subcommands
+//! (the default `cli` feature):
 //!
 //! ```text
-//! cargo run --bin handlist-check -- path/to/config
+//! cargo run --bin handlist -- check path/to/config
+//! cargo run --bin handlist -- fmt path/to/configs
 //! ```
 
 #![warn(missing_docs)]
 
 mod emit;
 mod error;
+mod format;
 mod parser;
+#[cfg(feature = "schema")]
+mod schema;
 #[cfg(feature = "serde")]
 mod serde_support;
 mod span;
 mod value;
 
 pub use error::Error;
+#[cfg(feature = "schema")]
+pub use schema::{SchemaError, SchemaValidation, validate_json_schema};
 pub use span::{Span, SpanMap};
 pub use value::{Map, Value};
 
@@ -56,6 +66,17 @@ pub fn parse(source: &str) -> Result<Value, Error> {
 /// the start of the mapping key that owns it.
 pub fn parse_with_spans(source: &str) -> Result<(Value, SpanMap), Error> {
     parser::parse_with_spans(source)
+}
+
+/// Formats a handlist document into canonical form while preserving comments.
+///
+/// Full-line comments keep their text and are re-indented to the node they
+/// belong to. Inline comments keep their text and stay on the same value line.
+/// Blank lines adjacent to comments and separators between top-level nodes are
+/// normalized to at most one. [`to_string_value`] remains the comment-free
+/// serializer for [`Value`]s.
+pub fn format(source: &str) -> Result<String, Error> {
+    format::to_string(source)
 }
 
 /// Serializes a [`Value`] into canonical handlist text.

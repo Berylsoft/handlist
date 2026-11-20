@@ -11,3 +11,5 @@
 # package tarballs and incremental build state
 *.tgz
 *.tsbuildinfo
+
+.cargo-home/

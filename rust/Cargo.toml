@@ -11,11 +11,21 @@ categories = ["parser-implementations", "config", "encoding"]
 readme = "../README.md"
 
 [features]
-default = ["serde"]
+default = ["serde", "schema", "cli"]
 serde = ["dep:serde"]
+schema = ["dep:jsonschema", "dep:serde_json", "serde"]
+cli = ["dep:argh", "schema"]
 
 [dependencies]
+argh = { version = "0.1.19", optional = true }
+jsonschema = { version = "0.28.3", default-features = false, optional = true }
 serde = { version = "1.0", optional = true, default-features = false, features = ["std"] }
+serde_json = { version = "1.0", optional = true }
+
+[[bin]]
+name = "handlist"
+path = "src/bin/handlist.rs"
+required-features = ["cli"]
 
 [dev-dependencies]
 serde = { version = "1.0", features = ["derive"] }

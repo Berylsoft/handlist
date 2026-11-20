@@ -119,7 +119,7 @@ fn emit_item_value(item: &Value, indent: usize, output: &mut String) -> Result<(
     }
 }
 
-fn inline_value(value: &Value) -> Result<String, Error> {
+pub(crate) fn inline_value(value: &Value) -> Result<String, Error> {
     match value {
         Value::Null => Ok("null".to_owned()),
         Value::Bool(true) => Ok("true".to_owned()),
@@ -149,7 +149,7 @@ fn inline_value(value: &Value) -> Result<String, Error> {
     }
 }
 
-fn format_key(key: &str) -> Result<String, Error> {
+pub(crate) fn format_key(key: &str) -> Result<String, Error> {
     if key.is_empty() {
         return Err(Error::new("mapping keys must not be empty"));
     }
@@ -268,7 +268,7 @@ fn quoted(value: &str) -> Result<String, Error> {
     Ok(output)
 }
 
-fn is_block_string(value: &str) -> bool {
+pub(crate) fn is_block_string(value: &str) -> bool {
     if !value.contains('\n') || value.starts_with('\n') || value.ends_with('\n') {
         return false;
     }
@@ -286,7 +286,7 @@ fn is_block_string(value: &str) -> bool {
         .any(|line| line.ends_with(' ') || line.ends_with('\t'))
 }
 
-fn write_block(value: &str, indent: usize, output: &mut String) {
+pub(crate) fn write_block(value: &str, indent: usize, output: &mut String) {
     for line in value.split('\n') {
         if !line.is_empty() {
             push_indent(output, indent);
@@ -341,7 +341,7 @@ fn expand_exponent(text: &str) -> Option<String> {
     Some(format!("{sign}{result}"))
 }
 
-fn push_indent(output: &mut String, indent: usize) {
+pub(crate) fn push_indent(output: &mut String, indent: usize) {
     for _ in 0..indent {
         output.push(' ');
     }

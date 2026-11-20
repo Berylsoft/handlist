@@ -20,10 +20,48 @@ pub(crate) fn parse_with_spans(source: &str) -> Result<(Value, SpanMap), Error> 
     Ok((value, parser.spans.take().unwrap_or_default()))
 }
 
+pub(crate) fn parse_for_format(source: &str) -> Result<(Value, FormatInfo), Error> {
+    let mut parser = Parser::new(source)?;
+    parser.spans = Some(SpanMap::new());
+    parser.format = Some(FormatInfo::default());
+    let value = parser.parse_document()?;
+    Ok((value, parser.format.take().unwrap_or_default()))
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FullLineComment {
+    pub(crate) line: usize,
+    pub(crate) indent: usize,
+    pub(crate) text: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct InlineComment {
+    pub(crate) path: String,
+    pub(crate) text: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct FormatAnchor {
+    pub(crate) path: String,
+    pub(crate) line: usize,
+    pub(crate) indent: usize,
+    pub(crate) order: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FormatInfo {
+    pub(crate) full_line_comments: Vec<FullLineComment>,
+    pub(crate) inline_comments: Vec<InlineComment>,
+    pub(crate) anchors: Vec<FormatAnchor>,
+    pub(crate) blank_lines: Vec<usize>,
+}
+
 struct Parser<'a> {
     lines: Vec<Line<'a>>,
     pos: usize,
     spans: Option<SpanMap>,
+    format: Option<FormatInfo>,
 }
 
 #[derive(Clone, Copy)]
@@ -81,6 +119,7 @@ impl<'a> Parser<'a> {
             lines,
             pos: 0,
             spans: None,
+            format: None,
         })
     }
 
@@ -92,11 +131,57 @@ impl<'a> Parser<'a> {
     fn skip_trivia(&mut self) {
         while self.pos < self.lines.len() {
             let line = &self.lines[self.pos];
-            if line.is_blank() || line.is_comment() {
-                self.pos += 1;
-            } else {
+            let is_blank = line.is_blank();
+            let is_comment = line.is_comment();
+            if !is_blank && !is_comment {
                 break;
             }
+            let number = line.number;
+            let indent = line.indent;
+            let text = (is_comment && self.format.is_some()).then(|| line.content.to_owned());
+            if is_blank {
+                self.record_blank_line(number);
+            } else if let Some(text) = text {
+                self.record_full_line_comment(number, indent, &text);
+            }
+            self.pos += 1;
+        }
+    }
+
+    fn record_anchor(&mut self, path: &str, line: usize, indent: usize) {
+        if let Some(format) = &mut self.format {
+            let order = format.anchors.len();
+            format.anchors.push(FormatAnchor {
+                path: path.to_owned(),
+                line,
+                indent,
+                order,
+            });
+        }
+    }
+
+    fn record_inline_comment(&mut self, path: &str, text: &str) {
+        if let Some(format) = &mut self.format {
+            format.inline_comments.push(InlineComment {
+                path: path.to_owned(),
+                text: text.to_owned(),
+            });
+        }
+    }
+
+    fn record_full_line_comment(&mut self, line: usize, indent: usize, text: &str) {
+        if let Some(format) = &mut self.format {
+            format.full_line_comments.push(FullLineComment {
+                line,
+                indent,
+                text: text.to_owned(),
+            });
+        }
+    }
+
+    fn record_blank_line(&mut self, line: usize) {
+        if let Some(format) = &mut self.format {
+            format.blank_lines.push(line);
         }
     }
 
@@ -150,6 +235,7 @@ impl<'a> Parser<'a> {
         }
 
         self.record_value("", number, 1);
+        self.record_anchor("", number, 0);
 
         let value = if is_sequence_start(content) {
             self.parse_sequence(0, None, "")?
@@ -180,7 +266,7 @@ impl<'a> Parser<'a> {
     ) -> Result<Value, Error> {
         self.pos += 1;
         let (value, end) = self.parse_inline_node(text, line, 1, 0, pointer)?;
-        self.finish_inline(text, end, line, 1)?;
+        self.finish_inline(text, end, line, 1, pointer)?;
         Ok(value)
     }
 
@@ -238,6 +324,7 @@ impl<'a> Parser<'a> {
             self.pos += 1;
             let child_pointer = self.child_pointer(pointer, &key);
             self.record_key(&child_pointer, number, indent + 1);
+            self.record_anchor(&child_pointer, number, indent);
             let value = self.parse_entry_value(
                 indent,
                 content,
@@ -265,6 +352,7 @@ impl<'a> Parser<'a> {
         };
         let child_pointer = self.child_pointer(pointer, &key);
         self.record_key(&child_pointer, line, column);
+        self.record_anchor(&child_pointer, line, mapping_indent);
         let value = self.parse_entry_value(
             mapping_indent,
             text,
@@ -318,7 +406,7 @@ impl<'a> Parser<'a> {
 
         let (value, end) =
             self.parse_inline_node(value_text, line, value_column, mapping_indent, pointer)?;
-        self.finish_inline(value_text, end, line, value_column)?;
+        self.finish_inline(value_text, end, line, value_column, pointer)?;
         Ok(value)
     }
 
@@ -372,6 +460,7 @@ impl<'a> Parser<'a> {
 
         if let Some(item) = first {
             let child_pointer = self.child_pointer(pointer, &item_index.to_string());
+            self.record_anchor(&child_pointer, item.line, indent);
             items.push(self.parse_sequence_item(
                 indent,
                 item.text,
@@ -409,6 +498,7 @@ impl<'a> Parser<'a> {
 
             self.pos += 1;
             let child_pointer = self.child_pointer(pointer, &item_index.to_string());
+            self.record_anchor(&child_pointer, number, indent);
             items.push(self.parse_sequence_item(
                 indent,
                 content,
@@ -494,7 +584,7 @@ impl<'a> Parser<'a> {
         }
 
         let (value, end) = self.parse_inline_node(text, line, column, indent, pointer)?;
-        self.finish_inline(text, end, line, column)?;
+        self.finish_inline(text, end, line, column, pointer)?;
         Ok(value)
     }
 
@@ -514,7 +604,7 @@ impl<'a> Parser<'a> {
 
         match first {
             '|' => {
-                let value = self.parse_block_text(text, line, column, entry_indent)?;
+                let value = self.parse_block_text(text, line, column, entry_indent, pointer)?;
                 Ok((Value::String(value), text.len()))
             }
             '>' => Err(Error::at(
@@ -744,6 +834,7 @@ impl<'a> Parser<'a> {
         line: usize,
         column: usize,
         entry_indent: usize,
+        pointer: &str,
     ) -> Result<String, Error> {
         let rest = &text[1..];
         if !rest.is_empty() {
@@ -768,6 +859,7 @@ impl<'a> Parser<'a> {
                             column + 1 + index,
                         ));
                     }
+                    self.record_inline_comment(pointer, &rest[index..]);
                 } else {
                     return Err(Error::at(
                         "the block text marker must be exactly '|'; '>', '|-', '|+' and indentation indicators are not supported",
@@ -819,11 +911,12 @@ impl<'a> Parser<'a> {
     }
 
     fn finish_inline(
-        &self,
+        &mut self,
         text: &str,
         end: usize,
         line: usize,
         column: usize,
+        pointer: &str,
     ) -> Result<(), Error> {
         let rest = &text[end..];
         let mut index = 0usize;
@@ -860,6 +953,7 @@ impl<'a> Parser<'a> {
                 error_column + 1,
             ));
         }
+        self.record_inline_comment(pointer, &rest[index..]);
         Ok(())
     }
 }

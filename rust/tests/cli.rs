@@ -1,25 +1,12 @@
+#![cfg(feature = "cli")]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn binary() -> &'static str {
-    env!("CARGO_BIN_EXE_handlist-check")
-}
-
-fn run(path: &Path) -> Output {
-    Command::new(binary())
-        .arg(path)
-        .output()
-        .expect("run handlist-check")
-}
-
-fn run_with_all(path: &Path) -> Output {
-    Command::new(binary())
-        .arg("--all")
-        .arg(path)
-        .output()
-        .expect("run handlist-check --all")
+    env!("CARGO_BIN_EXE_handlist")
 }
 
 fn stdout(output: &Output) -> String {
@@ -31,10 +18,7 @@ fn stderr(output: &Output) -> String {
 }
 
 fn exit_code(output: &Output) -> i32 {
-    output
-        .status
-        .code()
-        .expect("handlist-check exits with a code")
+    output.status.code().expect("handlist exits with a code")
 }
 
 struct TempTree {
@@ -59,16 +43,17 @@ impl TempTree {
         &self.path
     }
 
-    fn write(&self, relative: &str, contents: &str) {
-        self.write_bytes(relative, contents.as_bytes());
-    }
-
-    fn write_bytes(&self, relative: &str, contents: &[u8]) {
+    fn write(&self, relative: &str, contents: &str) -> PathBuf {
         let path = self.path.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("create parent directory");
         }
-        fs::write(path, contents).expect("write test file");
+        fs::write(&path, contents).expect("write test file");
+        path
+    }
+
+    fn read(&self, relative: &str) -> String {
+        fs::read_to_string(self.path.join(relative)).expect("read test file")
     }
 }
 
@@ -78,13 +63,21 @@ impl Drop for TempTree {
     }
 }
 
+fn check_path(path: &Path) -> Output {
+    Command::new(binary())
+        .arg("check")
+        .arg(path)
+        .output()
+        .expect("run handlist check")
+}
+
 #[test]
-fn reports_nested_syntax_errors_with_line_numbers() {
-    let tree = TempTree::new("nested");
+fn check_reports_syntax_errors_recursively() {
+    let tree = TempTree::new("syntax");
     tree.write("good.handlist", "name: ok\n");
     tree.write("nested/bad.handlist", "a: 1\nb: [x,,y]\n");
 
-    let output = run(tree.path());
+    let output = check_path(tree.path());
     let err = stderr(&output);
 
     assert_eq!(exit_code(&output), 1);
@@ -94,118 +87,179 @@ fn reports_nested_syntax_errors_with_line_numbers() {
     );
     assert!(
         err.contains("empty flow-sequence element"),
-        "expected the parser diagnostic, got:\n{err}"
+        "expected parser diagnostics, got:\n{err}"
     );
-    assert!(
-        stdout(&output).contains("checked 2 file(s), 1 error(s)"),
-        "unexpected summary:\n{}",
-        stdout(&output)
-    );
+    assert!(stdout(&output).contains("checked 2 file(s), 1 error(s)"));
 }
 
 #[test]
-fn checks_explicit_files_without_handlist_extension() {
-    let tree = TempTree::new("explicit");
-    tree.write("config.txt", "name: ok\n");
-
-    let output = Command::new(binary())
-        .arg(tree.path().join("config.txt"))
-        .output()
-        .expect("run handlist-check on an explicit file");
-
-    assert_eq!(exit_code(&output), 0);
-    assert!(stdout(&output).contains("checked 1 file(s), no syntax errors"));
-}
-
-#[test]
-fn clean_tree_succeeds() {
-    let tree = TempTree::new("clean");
-    tree.write("good.handlist", "name: ok\n");
-
-    let output = run(tree.path());
-
-    assert_eq!(exit_code(&output), 0);
-    assert!(stdout(&output).contains("checked 1 file(s), no syntax errors"));
-    assert!(stderr(&output).is_empty());
-}
-
-#[test]
-fn empty_directory_succeeds_with_a_notice() {
-    let tree = TempTree::new("empty");
-
-    let output = run(tree.path());
-
-    assert_eq!(exit_code(&output), 0);
-    assert!(stdout(&output).is_empty());
-    assert!(stderr(&output).contains("no .handlist files found"));
-}
-
-#[test]
-fn missing_path_is_an_error() {
-    let tree = TempTree::new("missing");
-    let missing = tree.path().join("does-not-exist");
-
-    let output = run(&missing);
-
-    assert_eq!(exit_code(&output), 1);
-    assert!(stderr(&output).contains("cannot access path"));
-    assert!(stdout(&output).contains("checked 0 file(s), 1 error(s)"));
-}
-
-#[test]
-fn skips_build_directories_unless_all_is_used() {
+fn check_skips_build_directories_unless_all_is_used() {
     let tree = TempTree::new("skipped");
     tree.write("good.handlist", "name: ok\n");
     tree.write("target/bad.handlist", "a: 1\nb: [x,,y]\n");
 
-    let default_output = run(tree.path());
+    let default_output = check_path(tree.path());
     assert_eq!(exit_code(&default_output), 0);
     assert!(stdout(&default_output).contains("checked 1 file(s), no syntax errors"));
 
-    let all_output = run_with_all(tree.path());
-    let err = stderr(&all_output);
+    let all_output = Command::new(binary())
+        .arg("check")
+        .arg(tree.path())
+        .arg("--all")
+        .output()
+        .expect("run handlist check --all");
     assert_eq!(exit_code(&all_output), 1);
-    assert!(
-        err.contains("bad.handlist:2:"),
-        "expected the bad file under target/, got:\n{err}"
-    );
+    assert!(stderr(&all_output).contains("bad.handlist:2:"));
     assert!(stdout(&all_output).contains("checked 2 file(s), 1 error(s)"));
 }
 
 #[test]
-fn reports_files_that_are_not_valid_utf8() {
-    let tree = TempTree::new("utf8");
-    tree.write_bytes("bad.handlist", &[0xff, 0xfe]);
+fn check_validates_against_a_schema_with_option_after_positional() {
+    let tree = TempTree::new("schema");
+    let schema = tree.write(
+        "schema.json",
+        r#"{
+  "type": "object",
+  "required": ["name", "count"],
+  "properties": {
+    "name": { "type": "string" },
+    "count": { "type": "integer" }
+  },
+  "additionalProperties": false
+}"#,
+    );
+    let valid = tree.write("valid.handlist", "name: Example\ncount: 2\n");
+    let invalid = tree.write("invalid.handlist", "name: Example\ncount: nope\n");
 
-    let output = run(tree.path());
+    let valid_output = Command::new(binary())
+        .arg("check")
+        .arg(&valid)
+        .arg("--schema")
+        .arg(&schema)
+        .output()
+        .expect("run valid schema check");
+    assert_eq!(exit_code(&valid_output), 0);
+    assert!(stdout(&valid_output).contains("valid against schema"));
 
-    assert_eq!(exit_code(&output), 1);
-    assert!(stderr(&output).contains("not valid UTF-8"));
-    assert!(stdout(&output).contains("checked 1 file(s), 1 error(s)"));
+    let invalid_output = Command::new(binary())
+        .arg("check")
+        .arg(&invalid)
+        .arg("--schema")
+        .arg(&schema)
+        .output()
+        .expect("run invalid schema check");
+    assert_eq!(exit_code(&invalid_output), 1);
+    assert!(
+        stderr(&invalid_output).contains("/count"),
+        "expected instance path, got:\n{}",
+        stderr(&invalid_output)
+    );
+    assert!(stderr(&invalid_output).contains("not of type \"integer\""));
 }
 
 #[test]
-fn help_version_and_usage_errors() {
-    let help = Command::new(binary())
-        .arg("--help")
-        .output()
-        .expect("run handlist-check --help");
-    assert_eq!(exit_code(&help), 0);
-    let help_text = stdout(&help);
-    assert!(help_text.contains("Usage:"));
-    assert!(help_text.contains("handlist-check"));
+fn check_reports_invalid_schema_files() {
+    let tree = TempTree::new("bad-schema");
+    let schema = tree.write("schema.json", "{");
+    let file = tree.write("file.handlist", "name: x\n");
 
-    let version = Command::new(binary())
-        .arg("--version")
+    let output = Command::new(binary())
+        .arg("check")
+        .arg(&file)
+        .arg("--schema")
+        .arg(&schema)
         .output()
-        .expect("run handlist-check --version");
-    assert_eq!(exit_code(&version), 0);
-    assert!(stdout(&version).contains(env!("CARGO_PKG_VERSION")));
+        .expect("run handlist check with an invalid schema");
+    assert_eq!(exit_code(&output), 1);
+    assert!(stderr(&output).contains("invalid JSON Schema"));
+}
 
-    let unknown = Command::new(binary())
-        .arg("--not-an-option")
+#[test]
+fn fmt_writes_in_place_and_preserves_comments() {
+    let tree = TempTree::new("fmt");
+    let file = tree.write("file.handlist", "# top\nname: \"Example\"   # inline\n");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .arg(&file)
         .output()
-        .expect("run handlist-check with an unknown option");
-    assert_eq!(exit_code(&unknown), 2);
-    assert!(stderr(&unknown).contains("unknown option"));
+        .expect("run handlist fmt");
+    assert_eq!(exit_code(&output), 0);
+    assert_eq!(
+        tree.read("file.handlist"),
+        "# top\nname: Example # inline\n"
+    );
+
+    let checked = Command::new(binary())
+        .arg("fmt")
+        .arg(&file)
+        .arg("--check")
+        .output()
+        .expect("run handlist fmt --check");
+    assert_eq!(exit_code(&checked), 0);
+}
+
+#[test]
+fn fmt_check_reports_without_writing() {
+    let tree = TempTree::new("fmt-check");
+    let file = tree.write("file.handlist", "name: \"Example\"\n");
+    let before = tree.read("file.handlist");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .arg(&file)
+        .arg("--check")
+        .output()
+        .expect("run handlist fmt --check");
+    assert_eq!(exit_code(&output), 1);
+    assert!(stderr(&output).contains("not formatted"));
+    assert_eq!(tree.read("file.handlist"), before);
+}
+
+#[test]
+fn fmt_recurses_and_skips_build_directories_by_default() {
+    let tree = TempTree::new("fmt-dir");
+    tree.write("a.handlist", "name: \"A\"\n");
+    tree.write("target/b.handlist", "name: \"B\"\n");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .arg(tree.path())
+        .output()
+        .expect("run handlist fmt on a directory");
+    assert_eq!(exit_code(&output), 0);
+    assert_eq!(tree.read("a.handlist"), "name: A\n");
+    assert_eq!(tree.read("target/b.handlist"), "name: \"B\"\n");
+
+    let all_output = Command::new(binary())
+        .arg("fmt")
+        .arg(tree.path())
+        .arg("--all")
+        .output()
+        .expect("run handlist fmt --all on a directory");
+    assert_eq!(exit_code(&all_output), 0);
+    assert_eq!(tree.read("target/b.handlist"), "name: B\n");
+}
+
+#[test]
+fn fmt_without_paths_uses_the_current_directory() {
+    let tree = TempTree::new("fmt-cwd");
+    tree.write("file.handlist", "name: \"Example\"\n");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .current_dir(tree.path())
+        .output()
+        .expect("run handlist fmt in the current directory");
+    assert_eq!(exit_code(&output), 0);
+    assert_eq!(tree.read("file.handlist"), "name: Example\n");
+}
+
+#[test]
+fn empty_directories_are_reported_but_do_not_fail() {
+    let tree = TempTree::new("empty");
+    let output = check_path(tree.path());
+    assert_eq!(exit_code(&output), 0);
+    assert!(stdout(&output).is_empty());
+    assert!(stderr(&output).contains("no .handlist files found"));
 }

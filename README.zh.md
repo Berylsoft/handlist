@@ -7,7 +7,7 @@
 最初用于描述网站的目录与页面配置，也适用于菜单、索引、文档元数据等需要大量手写的结构化数据。
 
 - 规范：[`spec/handlist-spec.md`](spec/handlist-spec.md)（英文，1.0）
-- Rust 实现：[`rust/`](rust/)（解析 + 规范序列化 + serde + `handlist-check` 二进制）
+- Rust 实现：[`rust/`](rust/)（解析 + 保留注释的格式化 + JSON Schema 校验 + 规范序列化 + serde + `handlist` check/fmt CLI）
 - TypeScript 实现：[`typescript/`](typescript/)（零运行时依赖，ESM/CJS + 类型）
 - 示例：[`examples/`](examples/)
 
@@ -63,9 +63,9 @@ site:
 ├── spec/
 │   └── handlist-spec.md          规范（EBNF、语义、规范化、错误、YAML 对比）
 ├── rust/
-│   ├── src/                      解析器、Value/Map、错误、序列化、serde
-│   │   └── bin/handlist-check.rs 递归语法检查二进制
-│   ├── tests/                    语法、serde、CLI、示例与 canonical fixture
+│   ├── src/                      解析器、span、格式化、JSON Schema、序列化、serde
+│   │   └── bin/handlist.rs       check/fmt CLI
+│   ├── tests/                    语法、span、serde、格式化、schema、CLI、示例
 │   └── examples/canonicalize.rs  打印/生成 canonical 输出
 ├── typescript/
 │   ├── src/                      零依赖 TS 实现
@@ -106,6 +106,8 @@ site:
 - `handlist::parse(&str) -> Result<Value, Error>`：解析为有序 `Value`。
 - `handlist::parse_with_spans(&str) -> Result<(Value, SpanMap), Error>`：解析并返回 JSON Pointer 位置映射（`Span { line, column }`）。`SpanMap::get(pointer)` 是值的起始位置，`SpanMap::key_span(pointer)` 是拥有该值的映射键的起始位置；指针按 RFC 6901 转义。
 - `handlist::to_string_value(&Value) -> Result<String, Error>`：canonical 序列化，始终可用。
+- `handlist::format(&str) -> Result<String, Error>`：canonical 源码格式化，并保留注释。整行注释随所属节点重新缩进；行内注释尽可能保留在值所在行。
+- `handlist::validate_json_schema(&str, &str) -> Result<SchemaValidation, Error>`：将文档转换为 JSON 后按 schema 校验。提供 `SchemaValidation::{is_valid, errors}` 与 `SchemaError::{instance_path, schema_path, message}`。支持 draft-07 和 2020-12；支持内部 `$ref`，不解析外部引用；没有 `$schema` 时按 2020-12 处理。
 - `Value::{Null, Bool, Int, Float, String, Seq, Map}`；`Map` 保留插入顺序。
 - `Error::{message, span, line, column}`；位置从 1 开始，列按 Unicode 标量值计数。
 - 默认启用 `serde` feature：
@@ -115,18 +117,23 @@ site:
   - `Value`/`Map` 自身实现 `Serialize`/`Deserialize`。
 - `from_str` 内部按带 span 的方式解析，因此 serde 错误（字段类型错误、缺字段、未知字段、序列元素类型错误、映射键错误）会带上当前正在解码的字段位置。缺字段错误使用最后消费的键；映射为空时回退到容器/根节点。
 - 数字型映射键也能从字符串键正确反序列化，例如 `BTreeMap<u8, String>` 读取 `10: ...`。
-- 关闭 serde（`default-features = false`）时仍保留 `parse`、`Value` 与 `to_string_value`。
+- 默认启用 `serde`、`schema`、`cli` feature。`parse`、`parse_with_spans`、`format`、`Value` 与 `to_string_value` 始终可用；`validate_json_schema` 需要 `schema`，二进制需要 `cli`。关闭 serde（`default-features = false`）时核心解析、格式化与 Value API 仍可用。
 
-### 语法检查器
+### CLI
 
-本 crate 同时构建 `handlist-check` 二进制。在 `rust/` 目录下运行：
+本 crate 构建 `handlist` 二进制（默认启用 `cli` feature）。在 `rust/` 目录下运行：
 
 ```bash
-cargo run --bin handlist-check -- ../examples
-cargo run --bin handlist-check -- ../examples --all
+cargo run --bin handlist -- check ../examples
+cargo run --bin handlist -- check config.handlist --schema schema.json
+cargo run --bin handlist -- fmt --check config.handlist
+cargo run --bin handlist -- fmt config.handlist
 ```
 
-`handlist-check` 接受文件或目录。显式传入的文件不检查扩展名；目录会递归查找文件名以 `.handlist` 结尾的文件，未提供路径时检查 `.`。语法错误以 `path:line:column: error: message` 输出到 stderr，汇总信息输出到 stdout。退出码为 0（无错误）、1（有错误）、2（用法错误）。每个文件报告第一个语法错误。默认跳过 `.git`、`target`、`node_modules`，`--all` 会包含它们；递归时不跟随目录符号链接。
+- `check` 检查文件或目录。显式传入的文件不检查扩展名；目录会递归查找文件名以 `.handlist` 结尾的文件。使用 `--schema` 时，将转为 JSON 的文档按 draft-07 或 2020-12 JSON Schema 校验；不传时只检查语法。
+- `fmt` 默认就地写入 canonical 格式。`--check` 只报告差异、不写入文件，并在需要改动时退出 `1`。注释会保留：整行注释随所属节点重新缩进，行内注释尽可能留在值所在行；如果 flow sequence 被展开为 block sequence，其行内注释会变成该值之后的整行注释。注释附近的空行和顶层节点之间的空行最多保留一个。
+- 两个命令在未提供路径时检查 `.`，默认跳过 `.git`、`target`、`node_modules`，`-a`/`--all` 会包含它们；递归时不跟随目录符号链接。诊断格式为 `path:line:column: error: ...`，失败时退出码为 `1`。
+- 参数解析使用 [`argh`](https://crates.io/crates/argh)。
 
 测试：
 
@@ -226,7 +233,7 @@ cargo run --example canonicalize
 
 ## 测试覆盖
 
-- Rust：29 个解析/序列化测试、3 个 span 测试、17 个 serde 测试、8 个 CLI 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
+- Rust：29 个解析/序列化测试、3 个 span 测试、17 个 serde 测试、9 个 CLI 测试、7 个格式化测试、8 个 JSON Schema 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
 - TypeScript：26 个解析/序列化/示例/YAML 子集测试，覆盖有序 Map、`__proto__` 键防护、循环引用、数字格式化与错误位置。
 - 两端对 8 个示例的 canonical 输出逐字节一致。
 

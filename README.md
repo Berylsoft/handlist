@@ -7,7 +7,7 @@ A data description language built for hand editing: a subset of YAML that keeps 
 It was originally created to describe a website's directory and page configuration, and it also suits menus, indexes, documentation metadata, and other structured data that is written and maintained by hand.
 
 - Specification: [`spec/handlist-spec.md`](spec/handlist-spec.md) (English, 1.0)
-- Rust implementation: [`rust/`](rust/) (parser + canonical serializer + serde + `handlist-check` binary)
+- Rust implementation: [`rust/`](rust/) (parser + comment-preserving formatter + JSON Schema validation + canonical serializer + serde + `handlist` check/fmt CLI)
 - TypeScript implementation: [`typescript/`](typescript/) (zero runtime dependencies, ESM/CJS + types)
 - Examples: [`examples/`](examples/)
 
@@ -63,9 +63,9 @@ These constructs are rejected explicitly: `yes`/`no` as booleans, implicit null 
 ├── spec/
 │   └── handlist-spec.md          Specification (EBNF, semantics, canonical form, errors, YAML comparison)
 ├── rust/
-│   ├── src/                      Parser, Value/Map, errors, serializer, serde
-│   │   └── bin/handlist-check.rs Recursive syntax checker binary
-│   ├── tests/                    Syntax, serde, CLI, examples + canonical fixtures
+│   ├── src/                      Parser, spans, formatter, JSON Schema, serializer, serde
+│   │   └── bin/handlist.rs       check/fmt CLI
+│   ├── tests/                    Syntax, spans, serde, formatter, schema, CLI, examples
 │   └── examples/canonicalize.rs  Print/generate canonical output
 ├── typescript/
 │   ├── src/                      Zero-dependency TypeScript implementation
@@ -106,6 +106,8 @@ Main API:
 - `handlist::parse(&str) -> Result<Value, Error>`: parse into an ordered `Value`.
 - `handlist::parse_with_spans(&str) -> Result<(Value, SpanMap), Error>`: parse and return JSON Pointer spans (`Span { line, column }`). `SpanMap::get(pointer)` is the value's start; `SpanMap::key_span(pointer)` is the start of the mapping key that owns it. Pointers use RFC 6901 escaping.
 - `handlist::to_string_value(&Value) -> Result<String, Error>`: canonical serialization, always available.
+- `handlist::format(&str) -> Result<String, Error>`: canonical source formatting that preserves comments. Full-line comments are re-indented with their node; inline comments stay on the value line where possible.
+- `handlist::validate_json_schema(&str, &str) -> Result<SchemaValidation, Error>`: convert the document to JSON and validate it against a schema. `SchemaValidation::{is_valid, errors}` and `SchemaError::{instance_path, schema_path, message}` are available. Supported drafts are draft-07 and 2020-12; internal `$ref`s are supported, external references are not resolved, and a schema without `$schema` defaults to 2020-12.
 - `Value::{Null, Bool, Int, Float, String, Seq, Map}`; `Map` preserves insertion order.
 - `Error::{message, span, line, column}`; locations are 1-based, and columns count Unicode scalar values.
 - The `serde` feature is enabled by default:
@@ -115,18 +117,23 @@ Main API:
   - `Value`/`Map` implement `Serialize`/`Deserialize` themselves.
 - `from_str` parses with spans, so serde errors (wrong field type, missing or unknown field, bad sequence element, bad map key) carry the position of the field currently being decoded. Missing-field errors use the last consumed key, or the container/root when the mapping is empty.
 - Numeric mapping keys also deserialize correctly from string keys; for example, `BTreeMap<u8, String>` can read `10: ...`.
-- With serde disabled (`default-features = false`), `parse`, `Value`, and `to_string_value` remain available.
+- Default features are `serde`, `schema`, and `cli`. `parse`, `parse_with_spans`, `format`, `Value`, and `to_string_value` are always available; `validate_json_schema` requires `schema`, and the binary requires `cli`. With serde disabled (`default-features = false`), the core parser, formatter, and value API remain available.
 
-### Syntax checker
+### CLI
 
-The crate also builds a `handlist-check` binary. Run it from `rust/`:
+The crate builds the `handlist` binary (feature `cli`, enabled by default). Run it from `rust/`:
 
 ```bash
-cargo run --bin handlist-check -- ../examples
-cargo run --bin handlist-check -- ../examples --all
+cargo run --bin handlist -- check ../examples
+cargo run --bin handlist -- check config.handlist --schema schema.json
+cargo run --bin handlist -- fmt --check config.handlist
+cargo run --bin handlist -- fmt config.handlist
 ```
 
-`handlist-check` accepts files and directories. Explicit files are checked regardless of extension; directories are searched recursively for files whose names end with `.handlist`. With no paths it checks `.`. Syntax diagnostics use `path:line:column: error: message` and are written to stderr; the summary goes to stdout. Exit codes are 0 (clean), 1 (errors), and 2 (usage error). The parser reports the first syntax error in each file. By default `.git`, `target`, and `node_modules` are skipped; `--all` includes them. Directory symlinks are not followed while recursing.
+- `check` parses files and directories. Explicit files are checked regardless of extension; directories are searched recursively for names ending in `.handlist`. With `--schema`, the JSON projection is validated against a draft-07 or 2020-12 JSON Schema. Without `--schema`, only syntax is checked.
+- `fmt` writes canonical formatting in place. `--check` reports differences without writing and exits `1` when changes are needed. Comments are preserved: full-line comments are re-indented with their node, inline comments stay on the value line where possible, and a comment on a flow sequence that expands to a block sequence becomes a standalone comment after the value. Blank lines adjacent to comments and between top-level nodes are normalized to at most one.
+- Both commands use `.` when no path is given, skip `.git`, `target`, and `node_modules` by default, and accept `-a`/`--all` to include them. Directory symlinks are not followed. Diagnostics use `path:line:column: error: ...`; failures exit `1`.
+- Arguments are parsed with [`argh`](https://crates.io/crates/argh).
 
 Tests:
 
@@ -226,7 +233,7 @@ Key trade-offs:
 
 ## Test coverage
 
-- Rust: 29 parser/serializer tests, 3 span tests, 17 serde tests, 8 CLI tests, 1 example + canonical fixture test, and 1 doc test.
+- Rust: 29 parser/serializer tests, 3 span tests, 17 serde tests, 9 CLI tests, 7 formatter tests, 8 JSON Schema tests, 1 example + canonical fixture test, and 1 doc test.
 - TypeScript: 26 parser/serializer/example/YAML-subset tests, covering ordered Maps, `__proto__` key protection, cycles, number formatting, and error positions.
 - The canonical output for all eight examples is byte-identical between the two implementations.
 
