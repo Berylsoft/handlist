@@ -1,5 +1,6 @@
 //! Optional serde integration.
 
+use crate::span::{Span, SpanMap, pointer_child};
 use crate::{Error, Map, Value};
 use serde::de::{
     self, DeserializeOwned, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess,
@@ -9,15 +10,24 @@ use serde::ser::{
     Impossible, Serialize, SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant,
     SerializeTuple, SerializeTupleStruct, SerializeTupleVariant, Serializer,
 };
+use std::cell::Cell;
 use std::fmt;
+use std::rc::Rc;
 
 /// Deserializes a handlist document into a Rust type.
 pub fn from_str<T>(source: &str) -> Result<T, Error>
 where
     T: DeserializeOwned,
 {
-    let value = crate::parse(source)?;
-    T::deserialize(value)
+    let (value, spans) = crate::parse_with_spans(source)?;
+    let root_span = spans.get("");
+    let result = T::deserialize(SpannedDeserializer::new(
+        value,
+        Rc::new(spans),
+        String::new(),
+        root_span,
+    ));
+    result.map_err(|error| error.with_span_if_missing(root_span))
 }
 
 /// Serializes any `serde::Serialize` value into a handlist [`Value`].
@@ -422,6 +432,285 @@ impl<'de> VariantAccess<'de> for VariantValue {
             Some(_) => Err(Error::new("expected a mapping for a struct enum variant")),
             None => Err(Error::new("expected a struct enum variant")),
         }
+    }
+}
+
+struct SpannedDeserializer {
+    value: Value,
+    spans: Rc<SpanMap>,
+    pointer: String,
+    fallback: Option<Span>,
+}
+
+impl SpannedDeserializer {
+    fn new(value: Value, spans: Rc<SpanMap>, pointer: String, fallback: Option<Span>) -> Self {
+        Self {
+            value,
+            spans,
+            pointer,
+            fallback,
+        }
+    }
+
+    fn context(&self) -> Option<Span> {
+        context_span(&self.spans, &self.pointer, self.fallback)
+    }
+}
+
+fn context_span(spans: &SpanMap, pointer: &str, fallback: Option<Span>) -> Option<Span> {
+    spans
+        .key_span(pointer)
+        .or_else(|| spans.get(pointer))
+        .or(fallback)
+}
+
+fn attach_span<T>(result: Result<T, Error>, span: Option<Span>) -> Result<T, Error> {
+    result.map_err(|error| error.with_span_if_missing(span))
+}
+
+impl<'de> Deserializer<'de> for SpannedDeserializer {
+    type Error = Error;
+
+    fn deserialize_any<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        let context = self.context();
+        let spans = Rc::clone(&self.spans);
+        let pointer = self.pointer;
+
+        match self.value {
+            Value::Null => attach_span(visitor.visit_unit(), context),
+            Value::Bool(value) => attach_span(visitor.visit_bool(value), context),
+            Value::Int(value) => attach_span(visitor.visit_i64(value), context),
+            Value::Float(value) => attach_span(visitor.visit_f64(value), context),
+            Value::String(value) => attach_span(visitor.visit_string(value), context),
+            Value::Seq(values) => {
+                let access = SpannedSeqAccess {
+                    iter: values.into_iter(),
+                    index: 0,
+                    spans,
+                    pointer,
+                };
+                attach_span(visitor.visit_seq(access), context)
+            }
+            Value::Map(map) => {
+                let last_key = Rc::new(Cell::new(None));
+                let access = SpannedMapAccess {
+                    iter: map.into_iter(),
+                    spans,
+                    pointer,
+                    pending: None,
+                    last_key: Rc::clone(&last_key),
+                };
+                match visitor.visit_map(access) {
+                    Ok(value) => Ok(value),
+                    Err(error) => Err(error.with_span_if_missing(last_key.get().or(context))),
+                }
+            }
+        }
+    }
+
+    fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        let context = self.context();
+        match self.value {
+            Value::Null => attach_span(visitor.visit_none(), context),
+            value => {
+                let deserializer =
+                    SpannedDeserializer::new(value, self.spans, self.pointer, self.fallback);
+                attach_span(visitor.visit_some(deserializer), context)
+            }
+        }
+    }
+
+    fn deserialize_enum<V>(
+        self,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        let context = self.context();
+
+        let result = match self.value {
+            Value::String(variant) => visitor.visit_enum(EnumValue {
+                variant,
+                value: None,
+            }),
+            Value::Map(map) => {
+                let mut iter = map.into_iter();
+                let Some((variant, value)) = iter.next() else {
+                    return Err(Error::new(
+                        "expected a non-empty single-entry mapping for an enum",
+                    )
+                    .with_span_if_missing(context));
+                };
+                if iter.next().is_some() {
+                    return Err(
+                        Error::new("expected a single-entry mapping for an enum variant")
+                            .with_span_if_missing(context),
+                    );
+                }
+                visitor.visit_enum(EnumValue {
+                    variant,
+                    value: Some(value),
+                })
+            }
+            other => Err(Error::new(format!(
+                "expected an enum string or single-entry mapping, found {}",
+                other.kind()
+            ))),
+        };
+
+        attach_span(result, context)
+    }
+
+    fn deserialize_newtype_struct<V>(
+        self,
+        _name: &'static str,
+        visitor: V,
+    ) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        let context = self.context();
+        attach_span(visitor.visit_newtype_struct(self), context)
+    }
+
+    fn deserialize_char<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        let context = self.context();
+        let result = match self.value {
+            Value::String(text) => {
+                let mut chars = text.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) => visitor.visit_char(ch),
+                    _ => Err(Error::new("expected a single-character string")),
+                }
+            }
+            other => other.deserialize_any(visitor),
+        };
+        attach_span(result, context)
+    }
+
+    fn deserialize_identifier<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        self.deserialize_any(visitor)
+    }
+
+    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Error>
+    where
+        V: Visitor<'de>,
+    {
+        visitor.visit_unit()
+    }
+
+    serde::forward_to_deserialize_any! {
+        bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 str string
+        bytes byte_buf unit unit_struct seq tuple tuple_struct map struct
+    }
+}
+
+struct SpannedSeqAccess {
+    iter: std::vec::IntoIter<Value>,
+    index: usize,
+    spans: Rc<SpanMap>,
+    pointer: String,
+}
+
+impl<'de> SeqAccess<'de> for SpannedSeqAccess {
+    type Error = Error;
+
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Error>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        let Some(value) = self.iter.next() else {
+            return Ok(None);
+        };
+
+        let child_pointer = pointer_child(&self.pointer, &self.index.to_string());
+        self.index += 1;
+        let span = self
+            .spans
+            .get(&child_pointer)
+            .or_else(|| self.spans.key_span(&child_pointer));
+        let deserializer =
+            SpannedDeserializer::new(value, Rc::clone(&self.spans), child_pointer, span);
+
+        match seed.deserialize(deserializer) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => Err(error.with_span_if_missing(span)),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.iter.len())
+    }
+}
+
+struct SpannedMapAccess {
+    iter: std::vec::IntoIter<(String, Value)>,
+    spans: Rc<SpanMap>,
+    pointer: String,
+    pending: Option<(Value, String, Option<Span>)>,
+    last_key: Rc<Cell<Option<Span>>>,
+}
+
+impl<'de> MapAccess<'de> for SpannedMapAccess {
+    type Error = Error;
+
+    fn next_key_seed<K>(&mut self, seed: K) -> Result<Option<K::Value>, Error>
+    where
+        K: de::DeserializeSeed<'de>,
+    {
+        let Some((key, value)) = self.iter.next() else {
+            return Ok(None);
+        };
+
+        let child_pointer = pointer_child(&self.pointer, &key);
+        let key_span = self
+            .spans
+            .key_span(&child_pointer)
+            .or_else(|| self.spans.get(&child_pointer));
+        self.last_key.set(key_span);
+        self.pending = Some((value, child_pointer, key_span));
+
+        match seed.deserialize(MapKey { value: &key }) {
+            Ok(key) => Ok(Some(key)),
+            Err(error) => {
+                Err(error.with_span_if_missing(key_span.or_else(|| self.spans.get(&self.pointer))))
+            }
+        }
+    }
+
+    fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Error>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let Some((value, child_pointer, key_span)) = self.pending.take() else {
+            return Err(Error::new("mapping value requested before its key"));
+        };
+
+        let deserializer =
+            SpannedDeserializer::new(value, Rc::clone(&self.spans), child_pointer, key_span);
+        match seed.deserialize(deserializer) {
+            Ok(value) => Ok(value),
+            Err(error) => Err(error.with_span_if_missing(key_span)),
+        }
+    }
+
+    fn size_hint(&self) -> Option<usize> {
+        Some(self.iter.len())
     }
 }
 

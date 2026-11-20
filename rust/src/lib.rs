@@ -13,6 +13,11 @@
 //! The parser has no dependencies. Enable the default `serde` feature for
 //! `from_str`, `to_string`, and `to_value`.
 //!
+//! Use [`parse_with_spans`] when the source positions of values and mapping
+//! keys are needed. [`from_str`] uses the same span information internally, so
+//! serde errors such as a wrong field type, a missing field, or an unknown
+//! field carry the position of the field currently being decoded.
+//!
 //! The crate also ships a `handlist-check` binary that recursively checks
 //! `.handlist` files and directories:
 //!
@@ -27,9 +32,11 @@ mod error;
 mod parser;
 #[cfg(feature = "serde")]
 mod serde_support;
+mod span;
 mod value;
 
 pub use error::Error;
+pub use span::{Span, SpanMap};
 pub use value::{Map, Value};
 
 /// Parses a handlist document into a [`Value`].
@@ -37,6 +44,18 @@ pub use value::{Map, Value};
 /// See [`from_str`] for deserializing directly into a Rust type.
 pub fn parse(source: &str) -> Result<Value, Error> {
     parser::parse(source)
+}
+
+/// Parses a handlist document and returns the values' source spans.
+///
+/// The returned [`SpanMap`] maps JSON Pointer paths to [`Span`]s. The root is
+/// `""`, mapping entries and sequence elements extend their parent pointer (for
+/// example `/site/pages/0`), and keys are escaped according to RFC 6901.
+///
+/// [`SpanMap::get`] returns the start of a value; [`SpanMap::key_span`] returns
+/// the start of the mapping key that owns it.
+pub fn parse_with_spans(source: &str) -> Result<(Value, SpanMap), Error> {
+    parser::parse_with_spans(source)
 }
 
 /// Serializes a [`Value`] into canonical handlist text.
@@ -78,6 +97,10 @@ where
 
 /// Deserializes a handlist document into any [`serde::de::DeserializeOwned`]
 /// type.
+///
+/// Errors produced by the serde data model (wrong field type, missing field,
+/// unknown field, and so on) carry the source position of the field currently
+/// being decoded when one is available.
 #[cfg(feature = "serde")]
 pub fn from_str<T>(source: &str) -> Result<T, Error>
 where

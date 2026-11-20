@@ -3,17 +3,27 @@
 //! The parser is line-oriented and deliberately strict: it accepts exactly the
 //! language described in `spec/handlist-spec.md`.
 
+use crate::span::{Span, SpanMap, pointer_child};
 use crate::value::MAX_SAFE_INT;
 use crate::{Error, Map, Value};
 
 /// Parses a handlist document into a [`Value`].
 pub fn parse(source: &str) -> Result<Value, Error> {
-    Parser::new(source)?.parse_document()
+    let mut parser = Parser::new(source)?;
+    parser.parse_document()
+}
+
+pub(crate) fn parse_with_spans(source: &str) -> Result<(Value, SpanMap), Error> {
+    let mut parser = Parser::new(source)?;
+    parser.spans = Some(SpanMap::new());
+    let value = parser.parse_document()?;
+    Ok((value, parser.spans.take().unwrap_or_default()))
 }
 
 struct Parser<'a> {
     lines: Vec<Line<'a>>,
     pos: usize,
+    spans: Option<SpanMap>,
 }
 
 #[derive(Clone, Copy)]
@@ -67,7 +77,11 @@ impl<'a> Parser<'a> {
             });
         }
 
-        Ok(Self { lines, pos: 0 })
+        Ok(Self {
+            lines,
+            pos: 0,
+            spans: None,
+        })
     }
 
     fn snapshot(&self) -> (usize, usize, &'a str) {
@@ -86,6 +100,26 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn child_pointer(&self, parent: &str, token: &str) -> String {
+        if self.spans.is_some() {
+            pointer_child(parent, token)
+        } else {
+            String::new()
+        }
+    }
+
+    fn record_value(&mut self, pointer: &str, line: usize, column: usize) {
+        if let Some(spans) = &mut self.spans {
+            spans.insert_value(pointer, Span::new(line, column));
+        }
+    }
+
+    fn record_key(&mut self, pointer: &str, line: usize, column: usize) {
+        if let Some(spans) = &mut self.spans {
+            spans.insert_key(pointer, Span::new(line, column));
+        }
+    }
+
     fn error_eof(&self, message: &str) -> Error {
         match self.lines.last() {
             Some(line) => Error::at(message, line.number, line.raw.chars().count() + 1),
@@ -93,7 +127,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_document(mut self) -> Result<Value, Error> {
+    fn parse_document(&mut self) -> Result<Value, Error> {
         self.skip_trivia();
         if self.pos >= self.lines.len() {
             return Err(self.error_eof("a handlist document must contain a root node"));
@@ -115,12 +149,14 @@ impl<'a> Parser<'a> {
             ));
         }
 
+        self.record_value("", number, 1);
+
         let value = if is_sequence_start(content) {
-            self.parse_sequence(0, None)?
+            self.parse_sequence(0, None, "")?
         } else if split_key_prefix(content, number, 1)?.is_some() {
-            self.parse_mapping(0, None)?
+            self.parse_mapping(0, None, "")?
         } else {
-            self.parse_root_scalar(number, content)?
+            self.parse_root_scalar(number, content, "")?
         };
 
         self.skip_trivia();
@@ -136,9 +172,14 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
-    fn parse_root_scalar(&mut self, line: usize, text: &'a str) -> Result<Value, Error> {
+    fn parse_root_scalar(
+        &mut self,
+        line: usize,
+        text: &'a str,
+        pointer: &str,
+    ) -> Result<Value, Error> {
         self.pos += 1;
-        let (value, end) = self.parse_inline_node(text, line, 1, 0)?;
+        let (value, end) = self.parse_inline_node(text, line, 1, 0, pointer)?;
         self.finish_inline(text, end, line, 1)?;
         Ok(value)
     }
@@ -147,12 +188,13 @@ impl<'a> Parser<'a> {
         &mut self,
         indent: usize,
         first: Option<InlineEntry<'a>>,
+        pointer: &str,
     ) -> Result<Value, Error> {
         let mut map = Map::new();
 
         if let Some(entry) = first {
             let (key, value, column) =
-                self.parse_entry_fragment(indent, entry.text, entry.line, entry.column)?;
+                self.parse_entry_fragment(indent, entry.text, entry.line, entry.column, pointer)?;
             insert_entry(&mut map, key, value, entry.line, column)?;
         }
 
@@ -194,7 +236,16 @@ impl<'a> Parser<'a> {
             };
 
             self.pos += 1;
-            let value = self.parse_entry_value(indent, content, after_colon, number, indent + 1)?;
+            let child_pointer = self.child_pointer(pointer, &key);
+            self.record_key(&child_pointer, number, indent + 1);
+            let value = self.parse_entry_value(
+                indent,
+                content,
+                after_colon,
+                number,
+                indent + 1,
+                &child_pointer,
+            )?;
             insert_entry(&mut map, key, value, number, indent + 1)?;
         }
 
@@ -207,11 +258,21 @@ impl<'a> Parser<'a> {
         text: &'a str,
         line: usize,
         column: usize,
+        pointer: &str,
     ) -> Result<(String, Value, usize), Error> {
         let Some((key, after_colon)) = split_key_prefix(text, line, column)? else {
             return Err(Error::at("expected a mapping key", line, column));
         };
-        let value = self.parse_entry_value(mapping_indent, text, after_colon, line, column)?;
+        let child_pointer = self.child_pointer(pointer, &key);
+        self.record_key(&child_pointer, line, column);
+        let value = self.parse_entry_value(
+            mapping_indent,
+            text,
+            after_colon,
+            line,
+            column,
+            &child_pointer,
+        )?;
         Ok((key, value, column))
     }
 
@@ -222,10 +283,11 @@ impl<'a> Parser<'a> {
         after_colon: usize,
         line: usize,
         base_column: usize,
+        pointer: &str,
     ) -> Result<Value, Error> {
         let rest = &text[after_colon..];
         if rest.trim_end_matches(' ').is_empty() {
-            return self.parse_child_block(mapping_indent + 2);
+            return self.parse_child_block(mapping_indent + 2, pointer);
         }
 
         let spaces = rest.len() - rest.trim_start_matches(' ').len();
@@ -255,12 +317,12 @@ impl<'a> Parser<'a> {
         }
 
         let (value, end) =
-            self.parse_inline_node(value_text, line, value_column, mapping_indent)?;
+            self.parse_inline_node(value_text, line, value_column, mapping_indent, pointer)?;
         self.finish_inline(value_text, end, line, value_column)?;
         Ok(value)
     }
 
-    fn parse_child_block(&mut self, indent: usize) -> Result<Value, Error> {
+    fn parse_child_block(&mut self, indent: usize, pointer: &str) -> Result<Value, Error> {
         self.skip_trivia();
         if self.pos >= self.lines.len() {
             return Err(self.error_eof("expected a child block"));
@@ -284,10 +346,12 @@ impl<'a> Parser<'a> {
             ));
         }
 
+        self.record_value(pointer, number, indent + 1);
+
         if is_sequence_start(content) {
-            self.parse_sequence(indent, None)
+            self.parse_sequence(indent, None, pointer)
         } else if split_key_prefix(content, number, indent + 1)?.is_some() {
-            self.parse_mapping(indent, None)
+            self.parse_mapping(indent, None, pointer)
         } else {
             Err(Error::at(
                 "a value on a new line must be a mapping or a sequence; write scalars on the key line",
@@ -301,11 +365,21 @@ impl<'a> Parser<'a> {
         &mut self,
         indent: usize,
         first: Option<InlineItem<'a>>,
+        pointer: &str,
     ) -> Result<Value, Error> {
         let mut items = Vec::new();
+        let mut item_index = 0usize;
 
         if let Some(item) = first {
-            items.push(self.parse_sequence_item(indent, item.text, item.line, item.column)?);
+            let child_pointer = self.child_pointer(pointer, &item_index.to_string());
+            items.push(self.parse_sequence_item(
+                indent,
+                item.text,
+                item.line,
+                item.column,
+                &child_pointer,
+            )?);
+            item_index += 1;
         }
 
         loop {
@@ -334,7 +408,15 @@ impl<'a> Parser<'a> {
             }
 
             self.pos += 1;
-            items.push(self.parse_sequence_item(indent, content, number, indent + 1)?);
+            let child_pointer = self.child_pointer(pointer, &item_index.to_string());
+            items.push(self.parse_sequence_item(
+                indent,
+                content,
+                number,
+                indent + 1,
+                &child_pointer,
+            )?);
+            item_index += 1;
         }
 
         Ok(Value::Seq(items))
@@ -346,6 +428,7 @@ impl<'a> Parser<'a> {
         text: &'a str,
         line: usize,
         column: usize,
+        pointer: &str,
     ) -> Result<Value, Error> {
         if text == "-" {
             return Err(Error::at("a sequence item must have a value", line, column));
@@ -374,7 +457,8 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        self.parse_item_value(indent, after, line, column + 2)
+        self.record_value(pointer, line, column + 2);
+        self.parse_item_value(indent, after, line, column + 2, pointer)
     }
 
     fn parse_item_value(
@@ -383,13 +467,22 @@ impl<'a> Parser<'a> {
         text: &'a str,
         line: usize,
         column: usize,
+        pointer: &str,
     ) -> Result<Value, Error> {
         if text == "-" || text.starts_with("- ") {
-            return self.parse_sequence(indent + 2, Some(InlineItem { text, line, column }));
+            return self.parse_sequence(
+                indent + 2,
+                Some(InlineItem { text, line, column }),
+                pointer,
+            );
         }
 
         if split_key_prefix(text, line, column)?.is_some() {
-            return self.parse_mapping(indent + 2, Some(InlineEntry { text, line, column }));
+            return self.parse_mapping(
+                indent + 2,
+                Some(InlineEntry { text, line, column }),
+                pointer,
+            );
         }
 
         if text.starts_with('#') {
@@ -400,7 +493,7 @@ impl<'a> Parser<'a> {
             ));
         }
 
-        let (value, end) = self.parse_inline_node(text, line, column, indent)?;
+        let (value, end) = self.parse_inline_node(text, line, column, indent, pointer)?;
         self.finish_inline(text, end, line, column)?;
         Ok(value)
     }
@@ -411,10 +504,13 @@ impl<'a> Parser<'a> {
         line: usize,
         column: usize,
         entry_indent: usize,
+        pointer: &str,
     ) -> Result<(Value, usize), Error> {
         let Some(first) = text.chars().next() else {
             return Err(Error::at("expected a value", line, column));
         };
+
+        self.record_value(pointer, line, column);
 
         match first {
             '|' => {
@@ -430,7 +526,7 @@ impl<'a> Parser<'a> {
                 let (value, end) = scan_quoted(text, line, column)?;
                 Ok((Value::String(value), end))
             }
-            '[' => self.parse_flow_sequence(text, line, column),
+            '[' => self.parse_flow_sequence(text, line, column, pointer),
             '{' => self.parse_empty_mapping(text, line, column),
             '\'' => Err(Error::at(
                 "single-quoted strings are not supported; use double quotes",
@@ -494,8 +590,10 @@ impl<'a> Parser<'a> {
         text: &'a str,
         line: usize,
         column: usize,
+        pointer: &str,
     ) -> Result<(Value, usize), Error> {
         let mut values = Vec::new();
+        let mut element_index = 0usize;
         let mut index = skip_flow_spaces(text, 1, line, column)?;
 
         if index >= text.len() {
@@ -542,6 +640,10 @@ impl<'a> Parser<'a> {
                     element_column,
                 ));
             }
+
+            let element_pointer = self.child_pointer(pointer, &element_index.to_string());
+            self.record_value(&element_pointer, line, element_column);
+            element_index += 1;
 
             if first == '"' {
                 let (value, consumed) = scan_quoted(&text[index..], line, element_column)?;

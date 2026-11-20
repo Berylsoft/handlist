@@ -104,14 +104,16 @@ site:
 主要 API：
 
 - `handlist::parse(&str) -> Result<Value, Error>`：解析为有序 `Value`。
+- `handlist::parse_with_spans(&str) -> Result<(Value, SpanMap), Error>`：解析并返回 JSON Pointer 位置映射（`Span { line, column }`）。`SpanMap::get(pointer)` 是值的起始位置，`SpanMap::key_span(pointer)` 是拥有该值的映射键的起始位置；指针按 RFC 6901 转义。
 - `handlist::to_string_value(&Value) -> Result<String, Error>`：canonical 序列化，始终可用。
 - `Value::{Null, Bool, Int, Float, String, Seq, Map}`；`Map` 保留插入顺序。
-- `Error::{message, line, column}`；解析错误的行列从 1 开始，列按 Unicode 标量值计数。
+- `Error::{message, span, line, column}`；位置从 1 开始，列按 Unicode 标量值计数。
 - 默认启用 `serde` feature：
   - `handlist::from_str::<T>(&str)`
   - `handlist::to_string(&T)`
   - `handlist::to_value(&T)`
   - `Value`/`Map` 自身实现 `Serialize`/`Deserialize`。
+- `from_str` 内部按带 span 的方式解析，因此 serde 错误（字段类型错误、缺字段、未知字段、序列元素类型错误、映射键错误）会带上当前正在解码的字段位置。缺字段错误使用最后消费的键；映射为空时回退到容器/根节点。
 - 数字型映射键也能从字符串键正确反序列化，例如 `BTreeMap<u8, String>` 读取 `10: ...`。
 - 关闭 serde（`default-features = false`）时仍保留 `parse`、`Value` 与 `to_string_value`。
 
@@ -224,7 +226,7 @@ cargo run --example canonicalize
 
 ## 测试覆盖
 
-- Rust：29 个解析/序列化测试、10 个 serde 测试、8 个 CLI 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
+- Rust：29 个解析/序列化测试、3 个 span 测试、17 个 serde 测试、8 个 CLI 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
 - TypeScript：26 个解析/序列化/示例/YAML 子集测试，覆盖有序 Map、`__proto__` 键防护、循环引用、数字格式化与错误位置。
 - 两端对 8 个示例的 canonical 输出逐字节一致。
 

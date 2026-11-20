@@ -104,14 +104,16 @@ site:
 Main API:
 
 - `handlist::parse(&str) -> Result<Value, Error>`: parse into an ordered `Value`.
+- `handlist::parse_with_spans(&str) -> Result<(Value, SpanMap), Error>`: parse and return JSON Pointer spans (`Span { line, column }`). `SpanMap::get(pointer)` is the value's start; `SpanMap::key_span(pointer)` is the start of the mapping key that owns it. Pointers use RFC 6901 escaping.
 - `handlist::to_string_value(&Value) -> Result<String, Error>`: canonical serialization, always available.
 - `Value::{Null, Bool, Int, Float, String, Seq, Map}`; `Map` preserves insertion order.
-- `Error::{message, line, column}`; parse-error lines and columns are 1-based, and columns count Unicode scalar values.
+- `Error::{message, span, line, column}`; locations are 1-based, and columns count Unicode scalar values.
 - The `serde` feature is enabled by default:
   - `handlist::from_str::<T>(&str)`
   - `handlist::to_string(&T)`
   - `handlist::to_value(&T)`
   - `Value`/`Map` implement `Serialize`/`Deserialize` themselves.
+- `from_str` parses with spans, so serde errors (wrong field type, missing or unknown field, bad sequence element, bad map key) carry the position of the field currently being decoded. Missing-field errors use the last consumed key, or the container/root when the mapping is empty.
 - Numeric mapping keys also deserialize correctly from string keys; for example, `BTreeMap<u8, String>` can read `10: ...`.
 - With serde disabled (`default-features = false`), `parse`, `Value`, and `to_string_value` remain available.
 
@@ -224,7 +226,7 @@ Key trade-offs:
 
 ## Test coverage
 
-- Rust: 29 parser/serializer tests, 10 serde tests, 8 CLI tests, 1 example + canonical fixture test, and 1 doc test.
+- Rust: 29 parser/serializer tests, 3 span tests, 17 serde tests, 8 CLI tests, 1 example + canonical fixture test, and 1 doc test.
 - TypeScript: 26 parser/serializer/example/YAML-subset tests, covering ordered Maps, `__proto__` key protection, cycles, number formatting, and error positions.
 - The canonical output for all eight examples is byte-identical between the two implementations.
 
