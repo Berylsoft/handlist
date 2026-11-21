@@ -106,8 +106,9 @@ site:
 - `handlist::parse(&str) -> Result<Value, Error>`：解析为有序 `Value`。
 - `handlist::parse_with_spans(&str) -> Result<(Value, SpanMap), Error>`：解析并返回 JSON Pointer 位置映射（`Span { line, column }`）。`SpanMap::get(pointer)` 是值的起始位置，`SpanMap::key_span(pointer)` 是拥有该值的映射键的起始位置；指针按 RFC 6901 转义。
 - `handlist::to_string_value(&Value) -> Result<String, Error>`：canonical 序列化，始终可用。
-- `handlist::format(&str) -> Result<String, Error>`：canonical 源码格式化，并保留注释。整行注释随所属节点重新缩进；行内注释尽可能保留在值所在行。
-- `handlist::validate_json_schema(&str, &str) -> Result<SchemaValidation, Error>`：将文档转换为 JSON 后按 schema 校验。提供 `SchemaValidation::{is_valid, errors}` 与 `SchemaError::{instance_path, schema_path, message}`。支持 draft-07 和 2020-12；支持内部 `$ref`，不解析外部引用；没有 `$schema` 时按 2020-12 处理。
+- `handlist::format(&str) -> Result<String, Error>`（feature `format`）：canonical 源码格式化，并保留注释。整行注释随所属节点重新缩进；行内注释尽可能保留在值所在行。
+- `handlist::format_with_config(&str, &FormatConfig)` 与 `FormatConfig::parse(&str)`（feature `format`）：应用 `.fmt.handlist` 格式化配置。可选的 `non-complex-one-line-seq` 会把源码中元素均为非复合值的单行 flow sequence 保留在一行；`one-line-in-multi-line-text` 会把源码中内容为 0 或 1 行的 `|` 块文本保留为 block 形式。两者只影响呈现，不改变值。
+- `handlist::validate_json_schema(&str, &str) -> Result<SchemaValidation, Error>`（feature `schema`）：将文档转换为 JSON 后按 schema 校验。提供 `SchemaValidation::{is_valid, errors}` 与 `SchemaError::{instance_path, schema_path, message}`。支持 draft-07 和 2020-12；支持内部 `$ref`，不解析外部引用；没有 `$schema` 时按 2020-12 处理。
 - `Value::{Null, Bool, Int, Float, String, Seq, Map}`；`Map` 保留插入顺序。
 - `Error::{message, span, line, column}`；位置从 1 开始，列按 Unicode 标量值计数。
 - 默认启用 `serde` feature：
@@ -117,18 +118,31 @@ site:
   - `Value`/`Map` 自身实现 `Serialize`/`Deserialize`。
 - `from_str` 内部按带 span 的方式解析，因此 serde 错误（字段类型错误、缺字段、未知字段、序列元素类型错误、映射键错误）会带上当前正在解码的字段位置。缺字段错误使用最后消费的键；映射为空时回退到容器/根节点。
 - 数字型映射键也能从字符串键正确反序列化，例如 `BTreeMap<u8, String>` 读取 `10: ...`。
-- 默认启用 `serde`、`schema`、`cli` feature。`parse`、`parse_with_spans`、`format`、`Value` 与 `to_string_value` 始终可用；`validate_json_schema` 需要 `schema`，二进制需要 `cli`。关闭 serde（`default-features = false`）时核心解析、格式化与 Value API 仍可用。
+- 默认只启用 `serde`。`format` 启用 `format`、`format_with_config` 与 `FormatConfig`；`schema` 启用 `validate_json_schema`；`cli` 启用 `handlist` 二进制，并同时启用 `schema` 和 `format`。`parse`、`parse_with_spans`、`Value` 与 `to_string_value` 无需可选 feature。只做解析时使用 `default-features = false`（需要类型反序列化时保留 `serde`）。
 
 ### CLI
 
-本 crate 构建 `handlist` 二进制（默认启用 `cli` feature）。在 `rust/` 目录下运行：
+启用 `cli` feature 后构建 `handlist` 二进制。在 `rust/` 目录下运行：
 
 ```bash
-cargo run --bin handlist -- check ../examples
-cargo run --bin handlist -- check config.handlist --schema schema.json
-cargo run --bin handlist -- fmt --check config.handlist
-cargo run --bin handlist -- fmt config.handlist
+cargo run --features cli --bin handlist -- check ../examples
+cargo run --features cli --bin handlist -- check config.handlist --schema schema.json
+cargo run --features cli --bin handlist -- fmt --check config.handlist
+cargo run --features cli --bin handlist -- fmt config.handlist
 ```
+
+安装 CLI 使用 `cargo install --path rust --features cli`。
+
+`fmt` 会在当前工作目录查找 `.fmt.handlist`，也可以用 `--config PATH` 指定。配置本身也是 handlist 文档：
+
+```handlist
+version: 1
+allow:
+  - non-complex-one-line-seq
+  - one-line-in-multi-line-text
+```
+
+`non-complex-one-line-seq` 只保留源码中已经写成一行、且元素都是标量的 flow sequence，不会把 block sequence 折叠成一行。`one-line-in-multi-line-text` 只保留源码中内容为 0 或 1 行的 `|` 块文本，不会把 inline 字符串展开成 block。配置采用严格校验：`version` 必须为 `1`（`allow` 可以省略），未知字段/选项和重复选项都会报错。
 
 - `check` 检查文件或目录。显式传入的文件不检查扩展名；目录会递归查找文件名以 `.handlist` 结尾的文件。使用 `--schema` 时，将转为 JSON 的文档按 draft-07 或 2020-12 JSON Schema 校验；不传时只检查语法。
 - `fmt` 默认就地写入 canonical 格式。`--check` 只报告差异、不写入文件，并在需要改动时退出 `1`。注释会保留：整行注释随所属节点重新缩进，行内注释尽可能留在值所在行；如果 flow sequence 被展开为 block sequence，其行内注释会变成该值之后的整行注释。注释附近的空行和顶层节点之间的空行最多保留一个。
@@ -139,7 +153,7 @@ cargo run --bin handlist -- fmt config.handlist
 
 ```bash
 cd rust
-cargo test
+cargo test --all-features
 ```
 
 ## TypeScript
@@ -233,7 +247,7 @@ cargo run --example canonicalize
 
 ## 测试覆盖
 
-- Rust：29 个解析/序列化测试、3 个 span 测试、17 个 serde 测试、9 个 CLI 测试、7 个格式化测试、8 个 JSON Schema 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
+- Rust（`--all-features`）：29 个解析/序列化测试、3 个 span 测试、17 个 serde 测试、12 个 CLI 测试、12 个格式化测试、8 个 JSON Schema 测试、1 个示例 + canonical fixture 测试、1 个文档测试。
 - TypeScript：26 个解析/序列化/示例/YAML 子集测试，覆盖有序 Map、`__proto__` 键防护、循环引用、数字格式化与错误位置。
 - 两端对 8 个示例的 canonical 输出逐字节一致。
 

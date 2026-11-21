@@ -43,6 +43,9 @@ struct FmtArgs {
     /// check formatting without writing files
     #[argh(switch)]
     check: bool,
+    /// formatting config file (defaults to .fmt.handlist in the current directory)
+    #[argh(option)]
+    config: Option<PathBuf>,
     /// also recurse into .git, target, and node_modules
     #[argh(switch, short = 'a')]
     all: bool,
@@ -124,6 +127,10 @@ struct FmtStats {
 }
 
 fn fmt(args: FmtArgs) -> ExitCode {
+    let config = match load_format_config(args.config.as_deref()) {
+        Ok(config) => config,
+        Err(()) => return ExitCode::FAILURE,
+    };
     let paths = default_paths(args.paths);
     let (files, mut stats) = collect_fmt_files(&paths, args.all);
     if files.is_empty() && stats.errors == 0 {
@@ -136,7 +143,7 @@ fn fmt(args: FmtArgs) -> ExitCode {
         let Some(source) = read_source(&path, &mut stats.errors) else {
             continue;
         };
-        let formatted = match handlist::format(&source) {
+        let formatted = match handlist::format_with_config(&source, &config) {
             Ok(formatted) => formatted,
             Err(error) => {
                 report_handlist_error(&path, &error, &mut stats.errors);
@@ -195,6 +202,41 @@ fn default_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     }
 }
 
+fn load_format_config(explicit: Option<&Path>) -> Result<handlist::FormatConfig, ()> {
+    let path = match explicit {
+        Some(path) => path.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(directory) => directory.join(".fmt.handlist"),
+            Err(error) => {
+                eprintln!("handlist: error: cannot determine current directory: {error}");
+                return Err(());
+            }
+        },
+    };
+
+    let source = match fs::read_to_string(&path) {
+        Ok(source) => source,
+        Err(error) if explicit.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(handlist::FormatConfig::default());
+        }
+        Err(error) => {
+            eprintln!(
+                "{}: error: cannot read format config: {error}",
+                path.display()
+            );
+            return Err(());
+        }
+    };
+
+    match handlist::FormatConfig::parse(&source) {
+        Ok(config) => Ok(config),
+        Err(error) => {
+            print_handlist_error(&path, &error);
+            Err(())
+        }
+    }
+}
+
 fn load_schema(path: &Path) -> Result<String, ()> {
     match fs::read_to_string(path) {
         Ok(source) => {
@@ -232,8 +274,7 @@ fn read_source(path: &Path, errors: &mut usize) -> Option<String> {
     }
 }
 
-fn report_handlist_error(path: &Path, error: &handlist::Error, errors: &mut usize) {
-    *errors += 1;
+fn print_handlist_error(path: &Path, error: &handlist::Error) {
     match (error.line(), error.column()) {
         (Some(line), Some(column)) => {
             eprintln!(
@@ -246,6 +287,11 @@ fn report_handlist_error(path: &Path, error: &handlist::Error, errors: &mut usiz
             eprintln!("{}: error: {}", path.display(), error.message());
         }
     }
+}
+
+fn report_handlist_error(path: &Path, error: &handlist::Error, errors: &mut usize) {
+    *errors += 1;
+    print_handlist_error(path, error);
 }
 
 fn collect_files(paths: &[PathBuf], all: bool) -> (Vec<PathBuf>, CheckStats) {

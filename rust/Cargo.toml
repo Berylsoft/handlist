@@ -11,10 +11,11 @@ categories = ["parser-implementations", "config", "encoding"]
 readme = "../README.md"
 
 [features]
-default = ["serde", "schema", "cli"]
+default = ["serde"]
 serde = ["dep:serde"]
+format = []
 schema = ["dep:jsonschema", "dep:serde_json", "serde"]
-cli = ["dep:argh", "schema"]
+cli = ["dep:argh", "schema", "format"]
 
 [dependencies]
 argh = { version = "0.1.19", optional = true }

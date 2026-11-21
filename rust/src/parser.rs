@@ -20,6 +20,7 @@ pub(crate) fn parse_with_spans(source: &str) -> Result<(Value, SpanMap), Error> 
     Ok((value, parser.spans.take().unwrap_or_default()))
 }
 
+#[cfg(feature = "format")]
 pub(crate) fn parse_for_format(source: &str) -> Result<(Value, FormatInfo), Error> {
     let mut parser = Parser::new(source)?;
     parser.spans = Some(SpanMap::new());
@@ -28,6 +29,7 @@ pub(crate) fn parse_for_format(source: &str) -> Result<(Value, FormatInfo), Erro
     Ok((value, parser.format.take().unwrap_or_default()))
 }
 
+#[cfg(feature = "format")]
 #[derive(Clone, Debug)]
 pub(crate) struct FullLineComment {
     pub(crate) line: usize,
@@ -35,12 +37,14 @@ pub(crate) struct FullLineComment {
     pub(crate) text: String,
 }
 
+#[cfg(feature = "format")]
 #[derive(Clone, Debug)]
 pub(crate) struct InlineComment {
     pub(crate) path: String,
     pub(crate) text: String,
 }
 
+#[cfg(feature = "format")]
 #[derive(Clone, Debug)]
 pub(crate) struct FormatAnchor {
     pub(crate) path: String,
@@ -49,18 +53,22 @@ pub(crate) struct FormatAnchor {
     pub(crate) order: usize,
 }
 
+#[cfg(feature = "format")]
 #[derive(Clone, Debug, Default)]
 pub(crate) struct FormatInfo {
     pub(crate) full_line_comments: Vec<FullLineComment>,
     pub(crate) inline_comments: Vec<InlineComment>,
     pub(crate) anchors: Vec<FormatAnchor>,
     pub(crate) blank_lines: Vec<usize>,
+    pub(crate) inline_sequences: Vec<String>,
+    pub(crate) block_texts: Vec<String>,
 }
 
 struct Parser<'a> {
     lines: Vec<Line<'a>>,
     pos: usize,
     spans: Option<SpanMap>,
+    #[cfg(feature = "format")]
     format: Option<FormatInfo>,
 }
 
@@ -119,6 +127,7 @@ impl<'a> Parser<'a> {
             lines,
             pos: 0,
             spans: None,
+            #[cfg(feature = "format")]
             format: None,
         })
     }
@@ -136,18 +145,22 @@ impl<'a> Parser<'a> {
             if !is_blank && !is_comment {
                 break;
             }
-            let number = line.number;
-            let indent = line.indent;
-            let text = (is_comment && self.format.is_some()).then(|| line.content.to_owned());
-            if is_blank {
-                self.record_blank_line(number);
-            } else if let Some(text) = text {
-                self.record_full_line_comment(number, indent, &text);
+            #[cfg(feature = "format")]
+            {
+                let number = line.number;
+                let indent = line.indent;
+                let text = (is_comment && self.format.is_some()).then(|| line.content.to_owned());
+                if is_blank {
+                    self.record_blank_line(number);
+                } else if let Some(text) = text {
+                    self.record_full_line_comment(number, indent, &text);
+                }
             }
             self.pos += 1;
         }
     }
 
+    #[cfg(feature = "format")]
     fn record_anchor(&mut self, path: &str, line: usize, indent: usize) {
         if let Some(format) = &mut self.format {
             let order = format.anchors.len();
@@ -160,6 +173,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[cfg(not(feature = "format"))]
+    fn record_anchor(&mut self, _path: &str, _line: usize, _indent: usize) {}
+
+    #[cfg(feature = "format")]
     fn record_inline_comment(&mut self, path: &str, text: &str) {
         if let Some(format) = &mut self.format {
             format.inline_comments.push(InlineComment {
@@ -169,6 +186,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[cfg(not(feature = "format"))]
+    fn record_inline_comment(&mut self, _path: &str, _text: &str) {}
+
+    #[cfg(feature = "format")]
     fn record_full_line_comment(&mut self, line: usize, indent: usize, text: &str) {
         if let Some(format) = &mut self.format {
             format.full_line_comments.push(FullLineComment {
@@ -179,11 +200,32 @@ impl<'a> Parser<'a> {
         }
     }
 
+    #[cfg(feature = "format")]
     fn record_blank_line(&mut self, line: usize) {
         if let Some(format) = &mut self.format {
             format.blank_lines.push(line);
         }
     }
+
+    #[cfg(feature = "format")]
+    fn record_inline_sequence(&mut self, pointer: &str) {
+        if let Some(format) = &mut self.format {
+            format.inline_sequences.push(pointer.to_owned());
+        }
+    }
+
+    #[cfg(not(feature = "format"))]
+    fn record_inline_sequence(&mut self, _pointer: &str) {}
+
+    #[cfg(feature = "format")]
+    fn record_block_text(&mut self, pointer: &str) {
+        if let Some(format) = &mut self.format {
+            format.block_texts.push(pointer.to_owned());
+        }
+    }
+
+    #[cfg(not(feature = "format"))]
+    fn record_block_text(&mut self, _pointer: &str) {}
 
     fn child_pointer(&self, parent: &str, token: &str) -> String {
         if self.spans.is_some() {
@@ -682,6 +724,7 @@ impl<'a> Parser<'a> {
         column: usize,
         pointer: &str,
     ) -> Result<(Value, usize), Error> {
+        self.record_inline_sequence(pointer);
         let mut values = Vec::new();
         let mut element_index = 0usize;
         let mut index = skip_flow_spaces(text, 1, line, column)?;
@@ -836,6 +879,7 @@ impl<'a> Parser<'a> {
         entry_indent: usize,
         pointer: &str,
     ) -> Result<String, Error> {
+        self.record_block_text(pointer);
         let rest = &text[1..];
         if !rest.is_empty() {
             let mut index = 0usize;

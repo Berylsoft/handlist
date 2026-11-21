@@ -702,6 +702,9 @@ Canonical output is deterministic and always parses back to an equal value.
   A source-to-source formatter MAY retain comments while emitting otherwise
   canonical data lines. It MAY re-indent full-line comments and normalize blank
   lines; comment text is not part of the data model.
+- A configured source formatter MAY retain a flow sequence whose elements are
+  all non-complex, and MAY retain `|` block text whose content has zero or one
+  line. These options affect presentation only; they do not change the value.
 
 ### 7.2 Empty collections and null
 

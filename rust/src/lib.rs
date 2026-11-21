@@ -10,30 +10,34 @@
 //! assert_eq!(text, "name: example\nitems:\n  - one\n  - two\n");
 //! ```
 //!
-//! The core parser has no dependencies. Enable the default `serde` feature for
-//! `from_str`, `to_string`, and `to_value`.
+//! The core parser has no dependencies. The default `serde` feature enables
+//! `from_str`, `to_string`, and `to_value`; `format`, `schema`, and `cli` are
+//! opt-in features.
 //!
 //! Use [`parse_with_spans`] when the source positions of values and mapping
 //! keys are needed. [`from_str`] uses the same span information internally, so
 //! serde errors such as a wrong field type, a missing field, or an unknown
 //! field carry the position of the field currently being decoded.
 //!
-//! [`format()`] canonicalizes source text while preserving comments. With the
-//! default `schema` feature, [`validate_json_schema`] validates the JSON
-//! projection of a document against a draft-07 or 2020-12 JSON Schema.
+//! With the `format` feature, `format()` canonicalizes source text while
+//! preserving comments, and `format_with_config()` applies the optional rules
+//! from a `.fmt.handlist` configuration parsed as `FormatConfig`. With the
+//! `schema` feature, `validate_json_schema()` validates the JSON projection of
+//! a document against a draft-07 or 2020-12 JSON Schema.
 //!
 //! The crate also ships a `handlist` CLI with `check` and `fmt` subcommands
-//! (the default `cli` feature):
+//! when the `cli` feature is enabled:
 //!
 //! ```text
-//! cargo run --bin handlist -- check path/to/config
-//! cargo run --bin handlist -- fmt path/to/configs
+//! cargo run --features cli --bin handlist -- check path/to/config
+//! cargo run --features cli --bin handlist -- fmt path/to/configs
 //! ```
 
 #![warn(missing_docs)]
 
 mod emit;
 mod error;
+#[cfg(feature = "format")]
 mod format;
 mod parser;
 #[cfg(feature = "schema")]
@@ -44,6 +48,8 @@ mod span;
 mod value;
 
 pub use error::Error;
+#[cfg(feature = "format")]
+pub use format::FormatConfig;
 #[cfg(feature = "schema")]
 pub use schema::{SchemaError, SchemaValidation, validate_json_schema};
 pub use span::{Span, SpanMap};
@@ -75,8 +81,18 @@ pub fn parse_with_spans(source: &str) -> Result<(Value, SpanMap), Error> {
 /// Blank lines adjacent to comments and separators between top-level nodes are
 /// normalized to at most one. [`to_string_value`] remains the comment-free
 /// serializer for [`Value`]s.
+#[cfg(feature = "format")]
 pub fn format(source: &str) -> Result<String, Error> {
     format::to_string(source)
+}
+
+/// Formats a handlist document using a `.fmt.handlist` configuration.
+///
+/// This function is available with the `format` feature. See
+/// [`FormatConfig::parse`] and [`format()`].
+#[cfg(feature = "format")]
+pub fn format_with_config(source: &str, config: &FormatConfig) -> Result<String, Error> {
+    format::to_string_with_config(source, config)
 }
 
 /// Serializes a [`Value`] into canonical handlist text.

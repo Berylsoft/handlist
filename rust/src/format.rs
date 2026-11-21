@@ -5,13 +5,113 @@ use crate::parser::{FormatAnchor, FormatInfo, FullLineComment, InlineComment, pa
 use crate::span::pointer_child;
 use crate::{Error, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 
-/// Formats a handlist document into canonical form while retaining comments.
+/// Formatting options loaded from a `.fmt.handlist` configuration file.
+///
+/// The default configuration enables no optional formatting rules. Parse a
+/// configuration file with [`FormatConfig::parse`] and pass it to
+/// [`crate::format_with_config`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FormatConfig {
+    allow_non_complex_one_line_seq: bool,
+    allow_one_line_in_multi_line_text: bool,
+}
+
+impl FormatConfig {
+    /// Parses a `.fmt.handlist` document.
+    ///
+    /// The document must be a mapping with `version: 1` and an optional `allow`
+    /// sequence. Supported values are `non-complex-one-line-seq` and
+    /// `one-line-in-multi-line-text`. Unknown keys, unknown allow values, and
+    /// duplicates are errors.
+    pub fn parse(source: &str) -> Result<Self, Error> {
+        let value = crate::parse(source)?;
+        let Value::Map(map) = value else {
+            return Err(Error::new("format config must be a mapping"));
+        };
+
+        for key in map.keys() {
+            if key != "version" && key != "allow" {
+                return Err(Error::new(format!("unknown format config key {key:?}")));
+            }
+        }
+
+        match map.get("version") {
+            Some(Value::Int(1)) => {}
+            Some(Value::Int(version)) => {
+                return Err(Error::new(format!(
+                    "unsupported format config version {version}; expected 1"
+                )));
+            }
+            Some(_) => {
+                return Err(Error::new("format config 'version' must be the integer 1"));
+            }
+            None => {
+                return Err(Error::new("format config must contain 'version: 1'"));
+            }
+        }
+
+        let mut config = Self::default();
+        if let Some(allow) = map.get("allow") {
+            let Value::Seq(items) = allow else {
+                return Err(Error::new(
+                    "format config 'allow' must be a sequence of option names",
+                ));
+            };
+            for item in items {
+                let Value::String(name) = item else {
+                    return Err(Error::new("format config 'allow' entries must be strings"));
+                };
+                let slot = match name.as_str() {
+                    "non-complex-one-line-seq" => &mut config.allow_non_complex_one_line_seq,
+                    "one-line-in-multi-line-text" => &mut config.allow_one_line_in_multi_line_text,
+                    other => {
+                        return Err(Error::new(format!(
+                            "unknown format config option {other:?}"
+                        )));
+                    }
+                };
+                if *slot {
+                    return Err(Error::new(format!(
+                        "duplicate format config option {name:?}"
+                    )));
+                }
+                *slot = true;
+            }
+        }
+
+        Ok(config)
+    }
+
+    /// Returns whether `non-complex-one-line-seq` is enabled.
+    pub fn allow_non_complex_one_line_seq(&self) -> bool {
+        self.allow_non_complex_one_line_seq
+    }
+
+    /// Returns whether `one-line-in-multi-line-text` is enabled.
+    pub fn allow_one_line_in_multi_line_text(&self) -> bool {
+        self.allow_one_line_in_multi_line_text
+    }
+}
+
+impl FromStr for FormatConfig {
+    type Err = Error;
+
+    fn from_str(source: &str) -> Result<Self, Self::Err> {
+        Self::parse(source)
+    }
+}
+
 pub(crate) fn to_string(source: &str) -> Result<String, Error> {
+    to_string_with_config(source, &FormatConfig::default())
+}
+
+pub(crate) fn to_string_with_config(source: &str, config: &FormatConfig) -> Result<String, Error> {
     let (value, info) = parse_for_format(source)?;
-    let comments = Comments::new(info);
+    let formatter = Formatter::new(info, config);
     let mut output = String::new();
-    emit_root(&value, &mut output, &comments)?;
+    emit_root(&value, &mut output, &formatter)?;
 
     while output.ends_with("\n\n") {
         output.pop();
@@ -30,6 +130,45 @@ struct CommentBlock {
 }
 
 #[derive(Default)]
+struct Style {
+    inline_sequences: HashSet<String>,
+    block_texts: HashSet<String>,
+}
+
+struct Formatter<'a> {
+    comments: Comments,
+    config: &'a FormatConfig,
+    style: Style,
+}
+
+impl<'a> Formatter<'a> {
+    fn new(info: FormatInfo, config: &'a FormatConfig) -> Self {
+        let (comments, style) = Comments::new(info);
+        Self {
+            comments,
+            config,
+            style,
+        }
+    }
+
+    fn is_source_inline_sequence(&self, path: &str, seq: &[Value]) -> bool {
+        !seq.is_empty()
+            && self.config.allow_non_complex_one_line_seq
+            && self.style.inline_sequences.contains(path)
+            && seq
+                .iter()
+                .all(|value| !matches!(value, Value::Seq(_) | Value::Map(_)))
+    }
+
+    fn use_block_text(&self, path: &str, text: &str) -> bool {
+        is_block_string(text)
+            || (self.config.allow_one_line_in_multi_line_text
+                && self.style.block_texts.contains(path)
+                && !text.contains('\n'))
+    }
+}
+
+#[derive(Default)]
 struct Comments {
     leading: HashMap<String, Vec<CommentBlock>>,
     trailing: HashMap<String, Vec<CommentBlock>>,
@@ -38,13 +177,20 @@ struct Comments {
 }
 
 impl Comments {
-    fn new(info: FormatInfo) -> Self {
+    fn new(info: FormatInfo) -> (Self, Style) {
         let FormatInfo {
             full_line_comments,
             inline_comments,
             mut anchors,
             blank_lines,
+            inline_sequences,
+            block_texts,
         } = info;
+
+        let style = Style {
+            inline_sequences: inline_sequences.into_iter().collect(),
+            block_texts: block_texts.into_iter().collect(),
+        };
 
         anchors.sort_by_key(|anchor| (anchor.line, anchor.indent, anchor.order));
         let blank_lines: HashSet<usize> = blank_lines.into_iter().collect();
@@ -113,7 +259,7 @@ impl Comments {
             }
         }
 
-        comments
+        (comments, style)
     }
 
     fn leading(&self, path: &str) -> &[CommentBlock] {
@@ -196,47 +342,75 @@ fn ensure_blank(output: &mut String) {
     }
 }
 
-fn write_inline_comment(output: &mut String, comments: &Comments, path: &str) {
-    if let Some(comment) = comments.inline(path) {
+fn write_inline_comment(output: &mut String, formatter: &Formatter<'_>, path: &str) {
+    if let Some(comment) = formatter.comments.inline(path) {
         output.push(' ');
         output.push_str(comment);
     }
 }
 
-fn emit_inline_as_standalone(output: &mut String, comments: &Comments, path: &str, indent: usize) {
-    if let Some(comment) = comments.inline(path) {
+fn emit_inline_as_standalone(
+    output: &mut String,
+    formatter: &Formatter<'_>,
+    path: &str,
+    indent: usize,
+) {
+    if let Some(comment) = formatter.comments.inline(path) {
         push_indent(output, indent);
         output.push_str(comment);
         output.push('\n');
     }
 }
 
-fn emit_root(value: &Value, output: &mut String, comments: &Comments) -> Result<(), Error> {
-    comments.emit_leading("", 0, output);
+fn flow_sequence(seq: &[Value]) -> Result<String, Error> {
+    let mut text = String::from("[");
+    for (index, value) in seq.iter().enumerate() {
+        if index > 0 {
+            text.push_str(", ");
+        }
+        text.push_str(&inline_value(value)?);
+    }
+    text.push(']');
+    Ok(text)
+}
+
+fn write_block_content(text: &str, indent: usize, output: &mut String) {
+    if !text.is_empty() {
+        write_block(text, indent, output);
+    }
+}
+
+fn emit_root(value: &Value, output: &mut String, formatter: &Formatter<'_>) -> Result<(), Error> {
+    formatter.comments.emit_leading("", 0, output);
 
     match value {
         Value::Map(map) if !map.is_empty() => {
-            emit_map_entries(map, 0, "", output, comments, None)?;
-            emit_inline_as_standalone(output, comments, "", 0);
+            emit_map_entries(map, 0, "", output, formatter, None)?;
+            emit_inline_as_standalone(output, formatter, "", 0);
+        }
+        Value::Seq(seq) if !seq.is_empty() && formatter.is_source_inline_sequence("", seq) => {
+            output.push_str(&flow_sequence(seq)?);
+            write_inline_comment(output, formatter, "");
+            output.push('\n');
         }
         Value::Seq(seq) if !seq.is_empty() => {
-            emit_seq(seq, 0, "", output, comments, None)?;
-            emit_inline_as_standalone(output, comments, "", 0);
+            emit_seq(seq, 0, "", output, formatter, None)?;
+            emit_inline_as_standalone(output, formatter, "", 0);
         }
-        Value::String(text) if is_block_string(text) => {
+        Value::String(text) if formatter.use_block_text("", text) => {
             output.push('|');
-            write_inline_comment(output, comments, "");
+            write_inline_comment(output, formatter, "");
             output.push('\n');
-            write_block(text, 2, output);
+            write_block_content(text, 2, output);
         }
         _ => {
             output.push_str(&inline_value(value)?);
-            write_inline_comment(output, comments, "");
+            write_inline_comment(output, formatter, "");
             output.push('\n');
         }
     }
 
-    comments.emit_trailing("", 0, output);
+    formatter.comments.emit_trailing("", 0, output);
     Ok(())
 }
 
@@ -245,7 +419,7 @@ fn emit_map_entries(
     indent: usize,
     path: &str,
     output: &mut String,
-    comments: &Comments,
+    formatter: &Formatter<'_>,
     first_prefix: Option<&str>,
 ) -> Result<(), Error> {
     for (index, (key, value)) in map.iter().enumerate() {
@@ -257,14 +431,14 @@ fn emit_map_entries(
             // any leading comments for it were hoisted before that line.
             output.push_str(prefix);
         } else {
-            comments.emit_leading(&child, indent, output);
+            formatter.comments.emit_leading(&child, indent, output);
             push_indent(output, indent);
         }
 
         output.push_str(&format_key(key)?);
         output.push(':');
-        emit_value_after_colon(value, indent, &child, output, comments)?;
-        comments.emit_trailing(&child, indent, output);
+        emit_value_after_colon(value, indent, &child, output, formatter)?;
+        formatter.comments.emit_trailing(&child, indent, output);
     }
     Ok(())
 }
@@ -274,32 +448,39 @@ fn emit_value_after_colon(
     indent: usize,
     path: &str,
     output: &mut String,
-    comments: &Comments,
+    formatter: &Formatter<'_>,
 ) -> Result<(), Error> {
     match value {
         Value::Map(map) if !map.is_empty() => {
             output.push('\n');
-            emit_map_entries(map, indent + 2, path, output, comments, None)?;
-            emit_inline_as_standalone(output, comments, path, indent + 2);
+            emit_map_entries(map, indent + 2, path, output, formatter, None)?;
+            emit_inline_as_standalone(output, formatter, path, indent + 2);
+            Ok(())
+        }
+        Value::Seq(seq) if !seq.is_empty() && formatter.is_source_inline_sequence(path, seq) => {
+            output.push(' ');
+            output.push_str(&flow_sequence(seq)?);
+            write_inline_comment(output, formatter, path);
+            output.push('\n');
             Ok(())
         }
         Value::Seq(seq) if !seq.is_empty() => {
             output.push('\n');
-            emit_seq(seq, indent + 2, path, output, comments, None)?;
-            emit_inline_as_standalone(output, comments, path, indent + 2);
+            emit_seq(seq, indent + 2, path, output, formatter, None)?;
+            emit_inline_as_standalone(output, formatter, path, indent + 2);
             Ok(())
         }
-        Value::String(text) if is_block_string(text) => {
+        Value::String(text) if formatter.use_block_text(path, text) => {
             output.push_str(" |");
-            write_inline_comment(output, comments, path);
+            write_inline_comment(output, formatter, path);
             output.push('\n');
-            write_block(text, indent + 2, output);
+            write_block_content(text, indent + 2, output);
             Ok(())
         }
         _ => {
             output.push(' ');
             output.push_str(&inline_value(value)?);
-            write_inline_comment(output, comments, path);
+            write_inline_comment(output, formatter, path);
             output.push('\n');
             Ok(())
         }
@@ -311,7 +492,7 @@ fn emit_seq(
     indent: usize,
     path: &str,
     output: &mut String,
-    comments: &Comments,
+    formatter: &Formatter<'_>,
     first_prefix: Option<&str>,
 ) -> Result<(), Error> {
     for (index, item) in seq.iter().enumerate() {
@@ -321,14 +502,14 @@ fn emit_seq(
         if let Some(prefix) = prefix {
             output.push_str(prefix);
         } else {
-            comments.emit_leading(&child, indent, output);
-            hoist_compact_comments(item, &child, indent, output, comments);
+            formatter.comments.emit_leading(&child, indent, output);
+            hoist_compact_comments(item, &child, indent, output, formatter);
             push_indent(output, indent);
         }
 
         output.push_str("- ");
-        emit_item_value(item, indent, &child, output, comments)?;
-        comments.emit_trailing(&child, indent, output);
+        emit_item_value(item, indent, &child, output, formatter)?;
+        formatter.comments.emit_trailing(&child, indent, output);
     }
     Ok(())
 }
@@ -341,18 +522,18 @@ fn hoist_compact_comments(
     path: &str,
     indent: usize,
     output: &mut String,
-    comments: &Comments,
+    formatter: &Formatter<'_>,
 ) {
     match item {
         Value::Map(map) if !map.is_empty() => {
             let (key, _) = map.iter().next().expect("map is non-empty");
             let child = pointer_child(path, key);
-            comments.emit_leading(&child, indent, output);
+            formatter.comments.emit_leading(&child, indent, output);
         }
         Value::Seq(seq) if !seq.is_empty() => {
             let child = pointer_child(path, "0");
-            comments.emit_leading(&child, indent, output);
-            hoist_compact_comments(&seq[0], &child, indent, output, comments);
+            formatter.comments.emit_leading(&child, indent, output);
+            hoist_compact_comments(&seq[0], &child, indent, output, formatter);
         }
         _ => {}
     }
@@ -363,29 +544,35 @@ fn emit_item_value(
     indent: usize,
     path: &str,
     output: &mut String,
-    comments: &Comments,
+    formatter: &Formatter<'_>,
 ) -> Result<(), Error> {
     match item {
         Value::Map(map) if !map.is_empty() => {
-            emit_map_entries(map, indent + 2, path, output, comments, Some(""))?;
-            emit_inline_as_standalone(output, comments, path, indent);
+            emit_map_entries(map, indent + 2, path, output, formatter, Some(""))?;
+            emit_inline_as_standalone(output, formatter, path, indent);
+            Ok(())
+        }
+        Value::Seq(seq) if !seq.is_empty() && formatter.is_source_inline_sequence(path, seq) => {
+            output.push_str(&flow_sequence(seq)?);
+            write_inline_comment(output, formatter, path);
+            output.push('\n');
             Ok(())
         }
         Value::Seq(seq) if !seq.is_empty() => {
-            emit_seq(seq, indent + 2, path, output, comments, Some(""))?;
-            emit_inline_as_standalone(output, comments, path, indent);
+            emit_seq(seq, indent + 2, path, output, formatter, Some(""))?;
+            emit_inline_as_standalone(output, formatter, path, indent);
             Ok(())
         }
-        Value::String(text) if is_block_string(text) => {
+        Value::String(text) if formatter.use_block_text(path, text) => {
             output.push('|');
-            write_inline_comment(output, comments, path);
+            write_inline_comment(output, formatter, path);
             output.push('\n');
-            write_block(text, indent + 2, output);
+            write_block_content(text, indent + 2, output);
             Ok(())
         }
         _ => {
             output.push_str(&inline_value(item)?);
-            write_inline_comment(output, comments, path);
+            write_inline_comment(output, formatter, path);
             output.push('\n');
             Ok(())
         }

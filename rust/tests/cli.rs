@@ -256,6 +256,67 @@ fn fmt_without_paths_uses_the_current_directory() {
 }
 
 #[test]
+fn fmt_uses_fmt_handlist_from_the_current_directory() {
+    let tree = TempTree::new("fmt-config");
+    tree.write(
+        ".fmt.handlist",
+        "version: 1\nallow:\n  - non-complex-one-line-seq\n  - one-line-in-multi-line-text\n",
+    );
+    tree.write("file.handlist", "tags: [a, b]\ntext: |\n  one line\n");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .arg(tree.path().join("file.handlist"))
+        .current_dir(tree.path())
+        .output()
+        .expect("run handlist fmt with .fmt.handlist");
+    assert_eq!(exit_code(&output), 0);
+    assert_eq!(
+        tree.read("file.handlist"),
+        "tags: [a, b]\ntext: |\n  one line\n"
+    );
+}
+
+#[test]
+fn fmt_config_option_overrides_the_current_directory() {
+    let tree = TempTree::new("fmt-config-override");
+    let config = tree.write(
+        "style.handlist",
+        "version: 1\nallow:\n  - non-complex-one-line-seq\n",
+    );
+    let file = tree.write("file.handlist", "tags: [a, b]\n");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .arg(&file)
+        .arg("--config")
+        .arg(&config)
+        .current_dir(tree.path())
+        .output()
+        .expect("run handlist fmt --config");
+    assert_eq!(exit_code(&output), 0);
+    assert_eq!(tree.read("file.handlist"), "tags: [a, b]\n");
+}
+
+#[test]
+fn fmt_reports_invalid_fmt_handlist() {
+    let tree = TempTree::new("fmt-bad-config");
+    tree.write(".fmt.handlist", "version: 2\n");
+    let file = tree.write("file.handlist", "name: \"Example\"\n");
+    let before = tree.read("file.handlist");
+
+    let output = Command::new(binary())
+        .arg("fmt")
+        .arg(&file)
+        .current_dir(tree.path())
+        .output()
+        .expect("run handlist fmt with an invalid config");
+    assert_eq!(exit_code(&output), 1);
+    assert!(stderr(&output).contains("unsupported format config version 2"));
+    assert_eq!(tree.read("file.handlist"), before);
+}
+
+#[test]
 fn empty_directories_are_reported_but_do_not_fail() {
     let tree = TempTree::new("empty");
     let output = check_path(tree.path());

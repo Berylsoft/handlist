@@ -1,3 +1,5 @@
+#![cfg(feature = "format")]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

@@ -106,8 +106,9 @@ Main API:
 - `handlist::parse(&str) -> Result<Value, Error>`: parse into an ordered `Value`.
 - `handlist::parse_with_spans(&str) -> Result<(Value, SpanMap), Error>`: parse and return JSON Pointer spans (`Span { line, column }`). `SpanMap::get(pointer)` is the value's start; `SpanMap::key_span(pointer)` is the start of the mapping key that owns it. Pointers use RFC 6901 escaping.
 - `handlist::to_string_value(&Value) -> Result<String, Error>`: canonical serialization, always available.
-- `handlist::format(&str) -> Result<String, Error>`: canonical source formatting that preserves comments. Full-line comments are re-indented with their node; inline comments stay on the value line where possible.
-- `handlist::validate_json_schema(&str, &str) -> Result<SchemaValidation, Error>`: convert the document to JSON and validate it against a schema. `SchemaValidation::{is_valid, errors}` and `SchemaError::{instance_path, schema_path, message}` are available. Supported drafts are draft-07 and 2020-12; internal `$ref`s are supported, external references are not resolved, and a schema without `$schema` defaults to 2020-12.
+- `handlist::format(&str) -> Result<String, Error>` (feature `format`): canonical source formatting that preserves comments. Full-line comments are re-indented with their node; inline comments stay on the value line where possible.
+- `handlist::format_with_config(&str, &FormatConfig)` and `FormatConfig::parse(&str)` (feature `format`): apply a `.fmt.handlist` formatting configuration. The optional `non-complex-one-line-seq` rule keeps source flow sequences whose elements are all non-complex on one line; `one-line-in-multi-line-text` keeps source `|` block text whose content is zero or one line in block form. Both are presentation-only and leave the value unchanged.
+- `handlist::validate_json_schema(&str, &str) -> Result<SchemaValidation, Error>` (feature `schema`): convert the document to JSON and validate it against a schema. `SchemaValidation::{is_valid, errors}` and `SchemaError::{instance_path, schema_path, message}` are available. Supported drafts are draft-07 and 2020-12; internal `$ref`s are supported, external references are not resolved, and a schema without `$schema` defaults to 2020-12.
 - `Value::{Null, Bool, Int, Float, String, Seq, Map}`; `Map` preserves insertion order.
 - `Error::{message, span, line, column}`; locations are 1-based, and columns count Unicode scalar values.
 - The `serde` feature is enabled by default:
@@ -117,18 +118,31 @@ Main API:
   - `Value`/`Map` implement `Serialize`/`Deserialize` themselves.
 - `from_str` parses with spans, so serde errors (wrong field type, missing or unknown field, bad sequence element, bad map key) carry the position of the field currently being decoded. Missing-field errors use the last consumed key, or the container/root when the mapping is empty.
 - Numeric mapping keys also deserialize correctly from string keys; for example, `BTreeMap<u8, String>` can read `10: ...`.
-- Default features are `serde`, `schema`, and `cli`. `parse`, `parse_with_spans`, `format`, `Value`, and `to_string_value` are always available; `validate_json_schema` requires `schema`, and the binary requires `cli`. With serde disabled (`default-features = false`), the core parser, formatter, and value API remain available.
+- The default feature is only `serde`. `format` enables `format`, `format_with_config`, and `FormatConfig`; `schema` enables `validate_json_schema`; `cli` enables the `handlist` binary and implies `schema` and `format`. `parse`, `parse_with_spans`, `Value`, and `to_string_value` are available without optional features. For a parser-only dependency use `default-features = false` (or keep `serde` for typed deserialization).
 
 ### CLI
 
-The crate builds the `handlist` binary (feature `cli`, enabled by default). Run it from `rust/`:
+The crate builds the `handlist` binary with the `cli` feature. Run it from `rust/`:
 
 ```bash
-cargo run --bin handlist -- check ../examples
-cargo run --bin handlist -- check config.handlist --schema schema.json
-cargo run --bin handlist -- fmt --check config.handlist
-cargo run --bin handlist -- fmt config.handlist
+cargo run --features cli --bin handlist -- check ../examples
+cargo run --features cli --bin handlist -- check config.handlist --schema schema.json
+cargo run --features cli --bin handlist -- fmt --check config.handlist
+cargo run --features cli --bin handlist -- fmt config.handlist
 ```
+
+Install the CLI with `cargo install --path rust --features cli`.
+
+`fmt` looks for `.fmt.handlist` in the current working directory, or uses `--config PATH`. The optional configuration is itself a handlist document:
+
+```handlist
+version: 1
+allow:
+  - non-complex-one-line-seq
+  - one-line-in-multi-line-text
+```
+
+The `non-complex-one-line-seq` rule only preserves lists that were already written as one-line flow sequences with scalar elements; block sequences are not collapsed. `one-line-in-multi-line-text` only preserves source `|` blocks with zero or one content line; inline strings are not expanded. The configuration is strict: `version` must be `1` (and `allow` may be omitted), unknown fields/options and duplicate options are errors.
 
 - `check` parses files and directories. Explicit files are checked regardless of extension; directories are searched recursively for names ending in `.handlist`. With `--schema`, the JSON projection is validated against a draft-07 or 2020-12 JSON Schema. Without `--schema`, only syntax is checked.
 - `fmt` writes canonical formatting in place. `--check` reports differences without writing and exits `1` when changes are needed. Comments are preserved: full-line comments are re-indented with their node, inline comments stay on the value line where possible, and a comment on a flow sequence that expands to a block sequence becomes a standalone comment after the value. Blank lines adjacent to comments and between top-level nodes are normalized to at most one.
@@ -139,7 +153,7 @@ Tests:
 
 ```bash
 cd rust
-cargo test
+cargo test --all-features
 ```
 
 ## TypeScript
@@ -233,7 +247,7 @@ Key trade-offs:
 
 ## Test coverage
 
-- Rust: 29 parser/serializer tests, 3 span tests, 17 serde tests, 9 CLI tests, 7 formatter tests, 8 JSON Schema tests, 1 example + canonical fixture test, and 1 doc test.
+- Rust (`--all-features`): 29 parser/serializer tests, 3 span tests, 17 serde tests, 12 CLI tests, 12 formatter tests, 8 JSON Schema tests, 1 example + canonical fixture test, and 1 doc test.
 - TypeScript: 26 parser/serializer/example/YAML-subset tests, covering ordered Maps, `__proto__` key protection, cycles, number formatting, and error positions.
 - The canonical output for all eight examples is byte-identical between the two implementations.
 
